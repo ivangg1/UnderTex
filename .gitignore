@@ -36,3 +36,6 @@ yarn-debug.log*
 .vscode/*
 !.vscode/extensions.json
 *.sw?
+
+# Temporary AI instructions
+CLAUDE.md
