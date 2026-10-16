@@ -15,6 +15,7 @@ import {
   type CollabUser,
   type PeerInfo,
   type ConnectionStatus,
+  type CollabMode,
 } from "./services/collabManager";
 import type * as Y from "yjs";
 import type { Awareness } from "y-protocols/awareness";
@@ -40,6 +41,7 @@ function getSavedUser(): CollabUser {
 function App() {
   // ─── State ──────────────────────────────────────────────────────
   const [projectPath, setProjectPath] = useState<string | null>(null);
+  const [mode, setMode] = useState<CollabMode>("solo");
   const [roomId, setRoomId] = useState<string | null>(null);
   const [texContent, setTexContent] = useState<string>("");
   const [isProjectLoaded, setIsProjectLoaded] = useState(false);
@@ -164,28 +166,32 @@ function App() {
         collabManagerRef.current = null;
       }
 
-      // Initialize new P2P Collaboration Session
+      // Initialize new P2P Collaboration Session (Solo or Collab mode)
       const manager = new CollabManager({
         projectPath: project.project_path,
+        isCollab: project.is_collab,
         roomId: project.room_id,
         initialTexContent: project.tex_content,
         initialCrdtState: project.crdt_state,
         currentUser,
         callbacks: {
+          onModeChange: (newMode) => setMode(newMode),
           onHostChange: (newHost) => setIsHost(newHost),
           onPeersChange: (newPeers) => setPeers(newPeers),
           onStatusChange: (newStatus) => setConnectionStatus(newStatus),
           onContentChange: (newContent) => setTexContent(newContent),
+          onRoomIdChange: (newRoomId) => setRoomId(newRoomId),
         },
       });
 
       collabManagerRef.current = manager;
 
       setProjectPath(project.project_path);
-      setRoomId(project.room_id);
+      setMode(manager.mode);
+      setRoomId(manager.roomId);
       setTexContent(manager.ytext.toString());
       setCollabYText(manager.ytext);
-      setCollabAwareness(manager.provider.awareness);
+      setCollabAwareness(manager.awareness);
       setIsHost(manager.isHost);
       setPeers(manager.peers);
       setConnectionStatus(manager.status);
@@ -198,6 +204,36 @@ function App() {
       console.error("Failed to open project:", err);
     }
   }, [currentUser]);
+
+  // ─── Start / Stop Collaboration Handlers ─────────────────────────
+
+  const handleStartCollab = useCallback(async () => {
+    if (!collabManagerRef.current) return;
+    try {
+      const newRoomId = await collabManagerRef.current.startCollaboration();
+      setMode("collab");
+      setRoomId(newRoomId);
+      setIsHost(collabManagerRef.current.isHost);
+      setPeers(collabManagerRef.current.peers);
+      setConnectionStatus(collabManagerRef.current.status);
+    } catch (err) {
+      console.error("Failed to start collaboration:", err);
+    }
+  }, []);
+
+  const handleStopCollab = useCallback(async () => {
+    if (!collabManagerRef.current) return;
+    try {
+      await collabManagerRef.current.stopCollaboration();
+      setMode("solo");
+      setRoomId(null);
+      setIsHost(true);
+      setPeers([]);
+      setConnectionStatus("disconnected");
+    } catch (err) {
+      console.error("Failed to stop collaboration:", err);
+    }
+  }, []);
 
   // Clean up on component unmount
   useEffect(() => {
@@ -213,6 +249,7 @@ function App() {
       {/* Top Toolbar */}
       <Toolbar
         projectPath={projectPath}
+        mode={mode}
         roomId={roomId}
         isHost={isHost}
         isCompiling={isCompiling}
@@ -223,6 +260,8 @@ function App() {
         onOpenFolder={handleOpenFolder}
         onNewWindow={handleNewWindow}
         onCompile={handleCompile}
+        onStartCollab={handleStartCollab}
+        onStopCollab={handleStopCollab}
       />
 
       {/* Main split pane: Editor 50% | Preview 50% */}
@@ -231,7 +270,7 @@ function App() {
         <div className="w-1/2 min-h-0 border-r border-gray-700">
           {isProjectLoaded ? (
             <LatexEditor
-              key={`${projectPath}_${roomId}`}
+              key={projectPath}
               initialContent={texContent}
               ytext={collabYText}
               awareness={collabAwareness}

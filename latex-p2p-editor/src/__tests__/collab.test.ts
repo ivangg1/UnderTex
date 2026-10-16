@@ -2,6 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as Y from "yjs";
 import { CollabManager, getSignalingServers } from "../services/collabManager";
 
+vi.mock("../services/tauriBridge", () => ({
+  saveTexAtomic: vi.fn().mockResolvedValue(undefined),
+  saveProjectState: vi.fn().mockResolvedValue(undefined),
+  initCollabProject: vi.fn().mockResolvedValue("test-room-uuid-4321"),
+}));
+
 describe("Dynamic Leader Election Algorithm (SPEC 4.A)", () => {
   it("uses CollabManager.computeIsHost to assign Host to the lowest numerical clientID", () => {
     const peers = [1050, 402, 9999]; // 402 is lowest
@@ -187,3 +193,57 @@ describe("Signaling Server Configuration & Fallbacks", () => {
     expect(servers.length).toBeGreaterThanOrEqual(3);
   });
 });
+
+describe("Dual Mode: Solo (Local) vs Collaborative (P2P) (SPEC 4.D)", () => {
+  it("initializes in Solo Mode when isCollab is false without instantiating WebrtcProvider", () => {
+    const manager = new CollabManager({
+      projectPath: "/fake/path/solo_project",
+      isCollab: false,
+      roomId: null,
+      initialTexContent: "\\documentclass{article}\n\\begin{document}\nSolo\n\\end{document}",
+      initialCrdtState: null,
+      currentUser: { name: "Alice", color: "#3b82f6" },
+    });
+
+    expect(manager.mode).toBe("solo");
+    expect(manager.isHost).toBe(true);
+    expect(manager.provider).toBeNull();
+    expect(manager.peers).toEqual([]);
+    expect(manager.status).toBe("disconnected");
+    expect(manager.ytext.toString()).toContain("Solo");
+    expect(manager.awareness).toBeDefined();
+
+    manager.destroy();
+  });
+
+  it("transitions smoothly from Solo to Collab via startCollaboration without losing document state", async () => {
+    const manager = new CollabManager({
+      projectPath: "/fake/path/solo_project",
+      isCollab: false,
+      roomId: null,
+      initialTexContent: "\\documentclass{article}\n\\begin{document}\nBefore Collab\n\\end{document}",
+      initialCrdtState: null,
+      currentUser: { name: "Bob", color: "#10b981" },
+    });
+
+    expect(manager.mode).toBe("solo");
+    expect(manager.provider).toBeNull();
+
+    // Hot-activate collaboration
+    const roomId = await manager.startCollaboration();
+    expect(roomId).toBe("test-room-uuid-4321");
+    expect(manager.mode).toBe("collab");
+    expect(manager.provider).not.toBeNull();
+    expect(manager.ytext.toString()).toContain("Before Collab");
+
+    // Hot-disconnect back to Solo
+    await manager.stopCollaboration();
+    expect(manager.mode).toBe("solo");
+    expect(manager.provider).toBeNull();
+    expect(manager.isHost).toBe(true);
+    expect(manager.ytext.toString()).toContain("Before Collab");
+
+    manager.destroy();
+  });
+});
+

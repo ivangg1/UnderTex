@@ -9,7 +9,8 @@ import { open } from "@tauri-apps/plugin-dialog";
 export interface ProjectData {
   project_path: string;
   tex_content: string;
-  room_id: string;
+  is_collab: boolean;
+  room_id: string | null;
   crdt_state: number[] | null; // Vec<u8> arrives as number[]
 }
 
@@ -33,10 +34,18 @@ export async function pickProjectFolder(): Promise<string | null> {
 }
 
 /**
- * Read a project folder: loads main.tex, initializes room.json, loads CRDT state.
+ * Read a project folder: loads main.tex, detects is_collab mode, loads CRDT state if available.
  */
 export async function readProject(projectPath: string): Promise<ProjectData> {
   return invoke<ProjectData>("read_project", { projectPath });
+}
+
+/**
+ * Initialize collaboration on demand: creates .texcollab/room.json with a UUID
+ * and returns the new room_id.
+ */
+export async function initCollabProject(projectPath: string): Promise<string> {
+  return invoke<string>("init_collab_project", { projectPath });
 }
 
 /**

@@ -19,8 +19,10 @@ struct ProjectData {
     project_path: String,
     /// Contents of `main.tex` (empty string if the file doesn't exist yet)
     tex_content: String,
-    /// The deterministic WebRTC room ID for this project folder
-    room_id: String,
+    /// Whether this project is configured for collaborative editing (.texcollab/ exists)
+    is_collab: bool,
+    /// The deterministic WebRTC room ID for this project folder (if in collab mode)
+    room_id: Option<String>,
     /// Raw bytes of `.texcollab/crdt_state.bin`, if any
     crdt_state: Option<Vec<u8>>,
 }
@@ -144,8 +146,9 @@ fn run_compiler(temp_dir: &Path) -> Result<(std::process::Output, &'static str),
 
 // ─── Tauri commands ─────────────────────────────────────────────────
 
-/// Open a project folder: reads `main.tex`, initialises `.texcollab/room.json`,
-/// and optionally loads the persisted CRDT state.
+/// Open a project folder: reads `main.tex`, detects if `.texcollab/room.json` exists
+/// (Solo vs Collab mode), and optionally loads the persisted CRDT state.
+/// Does NOT create `.texcollab/` automatically.
 #[tauri::command]
 fn read_project(project_path: String) -> Result<ProjectData, String> {
     let path = PathBuf::from(&project_path);
@@ -165,16 +168,30 @@ fn read_project(project_path: String) -> Result<ProjectData, String> {
         starter.to_string()
     };
 
-    // Ensure .texcollab/room.json
-    let room_id = ensure_room_meta(&path)?;
+    // Check if .texcollab/room.json exists without creating .texcollab/
+    let collab_dir = path.join(".texcollab");
+    let room_file = collab_dir.join("room.json");
+    let (is_collab, room_id) = if room_file.exists() {
+        let data = fs::read_to_string(&room_file)
+            .map_err(|e| format!("Failed to read room.json: {e}"))?;
+        let meta: RoomMeta =
+            serde_json::from_str(&data).map_err(|e| format!("Invalid room.json: {e}"))?;
+        (true, Some(meta.room_id))
+    } else {
+        (false, None)
+    };
 
-    // Try to load CRDT state
-    let crdt_state_path = path.join(".texcollab").join("crdt_state.bin");
-    let crdt_state = if crdt_state_path.exists() {
-        Some(
-            fs::read(&crdt_state_path)
-                .map_err(|e| format!("Failed to read crdt_state.bin: {e}"))?,
-        )
+    // Try to load CRDT state if collaborative mode is active
+    let crdt_state = if is_collab {
+        let crdt_state_path = collab_dir.join("crdt_state.bin");
+        if crdt_state_path.exists() {
+            Some(
+                fs::read(&crdt_state_path)
+                    .map_err(|e| format!("Failed to read crdt_state.bin: {e}"))?,
+            )
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -182,9 +199,22 @@ fn read_project(project_path: String) -> Result<ProjectData, String> {
     Ok(ProjectData {
         project_path,
         tex_content,
+        is_collab,
         room_id,
         crdt_state,
     })
+}
+
+/// Initialize collaboration on demand for a project folder:
+/// Creates `.texcollab/room.json` with a UUID and returns the room_id.
+#[tauri::command]
+fn init_collab_project(project_path: String) -> Result<String, String> {
+    let path = PathBuf::from(&project_path);
+    if !path.is_dir() {
+        return Err(format!("Not a directory: {project_path}"));
+    }
+    let room_id = ensure_room_meta(&path)?;
+    Ok(room_id)
 }
 
 /// Atomically save `main.tex` content (write to tmp then rename).
@@ -313,6 +343,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             read_project,
+            init_collab_project,
             save_tex_atomic,
             save_crdt_state,
             save_project_state,
@@ -355,20 +386,32 @@ mod tests {
     }
 
     #[test]
-    fn test_read_project_creates_starter_tex_if_missing() {
-        let dir = create_temp_test_dir("read_proj");
+    fn test_read_project_creates_starter_tex_in_solo_mode() {
+        let dir = create_temp_test_dir("read_proj_solo");
         let dir_str = dir.to_str().unwrap().to_string();
 
-        let proj = read_project(dir_str).expect("Failed to read project");
+        let proj = read_project(dir_str.clone()).expect("Failed to read project");
 
         // Must create main.tex with standard starter document
         assert!(proj.tex_content.contains("\\documentclass{article}"));
         assert!(proj.tex_content.contains("\\begin{document}"));
         assert!(dir.join("main.tex").exists());
 
-        // Room ID must be valid and crdt_state must be None initially
-        assert!(Uuid::parse_str(&proj.room_id).is_ok());
+        // Solo Mode: .texcollab must NOT exist, is_collab is false, room_id is None
+        assert!(!dir.join(".texcollab").exists());
+        assert!(!proj.is_collab);
+        assert!(proj.room_id.is_none());
         assert!(proj.crdt_state.is_none());
+
+        // Now initiate collaboration on demand
+        let room_id = init_collab_project(dir_str.clone()).expect("Failed to init collab");
+        assert!(Uuid::parse_str(&room_id).is_ok());
+        assert!(dir.join(".texcollab").join("room.json").exists());
+
+        // Subsequent read_project detects collab mode
+        let proj_collab = read_project(dir_str).expect("Failed to re-read project");
+        assert!(proj_collab.is_collab);
+        assert_eq!(proj_collab.room_id, Some(room_id));
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -378,10 +421,11 @@ mod tests {
         let dir = create_temp_test_dir("atomic_save");
         let dir_str = dir.to_str().unwrap().to_string();
 
-        // 1. Initial read
-        let _ = read_project(dir_str.clone()).expect("Initial read failed");
+        // 1. Initial read in Solo mode
+        let initial = read_project(dir_str.clone()).expect("Initial read failed");
+        assert!(!initial.is_collab);
 
-        // 2. Save modified TeX atomically
+        // 2. Save modified TeX atomically in Solo mode (does NOT create .texcollab)
         let new_content = "\\documentclass{article}\n\\begin{document}\nModified Content\n\\end{document}";
         save_tex_atomic(dir_str.clone(), new_content.to_string())
             .expect("Atomic TeX save failed");
@@ -390,10 +434,12 @@ mod tests {
             fs::read_to_string(dir.join("main.tex")).unwrap(),
             new_content
         );
-        // Ensure no temporary file left behind
+        // Ensure no temporary file left behind and .texcollab was NOT created by save_tex_atomic
         assert!(!dir.join("main.tex.tmp").exists());
+        assert!(!dir.join(".texcollab").exists());
 
-        // 3. Save binary CRDT state
+        // 3. Switch to Collab mode via init_collab_project and save binary CRDT state
+        let room_id = init_collab_project(dir_str.clone()).expect("Init collab failed");
         let dummy_crdt = vec![0x00, 0x01, 0x02, 0xFF, 0xFE];
         save_crdt_state(dir_str.clone(), dummy_crdt.clone())
             .expect("CRDT state save failed");
@@ -401,8 +447,10 @@ mod tests {
         // Ensure no temporary CRDT file left behind
         assert!(!dir.join(".texcollab").join("crdt_state.bin.tmp").exists());
 
-        // 4. Re-read project and verify CRDT state is restored
+        // 4. Re-read project and verify CRDT state is restored in collab mode
         let reloaded = read_project(dir_str).expect("Reload project failed");
+        assert!(reloaded.is_collab);
+        assert_eq!(reloaded.room_id, Some(room_id));
         assert_eq!(reloaded.tex_content, new_content);
         assert_eq!(reloaded.crdt_state, Some(dummy_crdt));
 
@@ -414,7 +462,9 @@ mod tests {
         let dir = create_temp_test_dir("save_project_state");
         let dir_str = dir.to_str().unwrap().to_string();
 
+        let _ = init_collab_project(dir_str.clone()).expect("Init collab failed");
         let initial = read_project(dir_str.clone()).expect("Read failed");
+        assert!(initial.is_collab);
         assert_eq!(initial.crdt_state, None);
 
         let updated_tex = "\\documentclass{article}\n\\begin{document}\nState Save\n\\end{document}";

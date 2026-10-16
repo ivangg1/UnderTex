@@ -1,5 +1,5 @@
-// Toolbar component: Open folder, Room ID with copy, Host badge,
-// WebRTC status indicator, connected peers list/avatars, user profile selector, and compile button.
+// Toolbar component: Dual Mode (Solo/Local vs Collab/P2P)
+// Following SPEC.md Section 4.D
 
 import { useState, useRef, useEffect } from "react";
 import {
@@ -13,8 +13,16 @@ import {
   Users,
   ChevronDown,
   PlusSquare,
+  Share2,
+  WifiOff,
+  Laptop,
 } from "lucide-react";
-import type { PeerInfo, ConnectionStatus, CollabUser } from "../services/collabManager";
+import type {
+  PeerInfo,
+  ConnectionStatus,
+  CollabUser,
+  CollabMode,
+} from "../services/collabManager";
 
 export const PRESET_COLORS = [
   "#ef4444", // Red
@@ -29,6 +37,7 @@ export const PRESET_COLORS = [
 
 interface ToolbarProps {
   projectPath: string | null;
+  mode: CollabMode;
   roomId: string | null;
   isHost: boolean;
   isCompiling: boolean;
@@ -39,10 +48,13 @@ interface ToolbarProps {
   onOpenFolder: () => void;
   onNewWindow: () => void;
   onCompile: () => void;
+  onStartCollab: () => void;
+  onStopCollab: () => void;
 }
 
 export default function Toolbar({
   projectPath,
+  mode,
   roomId,
   isHost,
   isCompiling,
@@ -53,6 +65,8 @@ export default function Toolbar({
   onOpenFolder,
   onNewWindow,
   onCompile,
+  onStartCollab,
+  onStopCollab,
 }: ToolbarProps) {
   const [copied, setCopied] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
@@ -132,138 +146,174 @@ export default function Toolbar({
       {/* Project name */}
       {folderName && (
         <span
-          className="text-gray-300 font-medium truncate max-w-40 px-1.5 py-0.5 rounded bg-gray-700/60"
+          className="text-gray-300 font-medium truncate max-w-36 px-1.5 py-0.5 rounded bg-gray-700/60"
           title={projectPath || ""}
         >
           {folderName}
         </span>
       )}
 
-      {/* ─── WebRTC Room & Copy Button ─── */}
-      {roomId && (
-        <div className="flex items-center gap-1 bg-gray-700/70 border border-gray-600/60 rounded px-2 py-1">
-          <span className="text-gray-400 font-mono text-[11px] truncate max-w-28">
-            Sala: {roomId.slice(0, 8)}…
-          </span>
-          <button
-            onClick={handleCopyRoom}
-            className="flex items-center gap-1 text-[11px] font-medium text-gray-300 hover:text-white transition-colors cursor-pointer ml-1 pl-1.5 border-l border-gray-600"
-            title="Copiar UUID de la sala para invitar compañeros"
+      {/* ══════════════════ SOLO MODE CONTROLS ══════════════════ */}
+      {projectPath && mode === "solo" && (
+        <>
+          {/* Badge: Modo Individual (Local) */}
+          <span
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded font-medium text-[11px] bg-gray-700/60 text-gray-300 border border-gray-600/50"
+            title="Modo Individual: solo guarda en main.tex localmente sin tráfico de red"
           >
-            {copied ? (
+            <Laptop size={12} className="text-gray-400" />
+            <span>Modo Individual (Local)</span>
+          </span>
+
+          {/* Prominent Button: Colaborar en vivo */}
+          <button
+            onClick={onStartCollab}
+            disabled={isCompiling}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold shadow-sm transition-all cursor-pointer"
+            title="Compartir este proyecto y habilitar edición colaborativa P2P en tiempo real"
+          >
+            <Share2 size={13} />
+            <span>Colaborar en vivo</span>
+          </button>
+        </>
+      )}
+
+      {/* ══════════════════ COLLAB MODE CONTROLS ══════════════════ */}
+      {projectPath && mode === "collab" && (
+        <>
+          {/* Host / Guest Badge */}
+          <span
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded font-medium text-[11px] ${
+              isHost
+                ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                : "bg-gray-700/70 text-gray-300 border border-gray-600/50"
+            }`}
+            title={
+              isHost
+                ? "Eres el Host: tu cliente guarda en disco cada 1.5s para sincronizar con la nube."
+                : "Eres Invitado: sincronizado en RAM con el enjambre P2P sin escribir en disco."
+            }
+          >
+            {isHost ? (
               <>
-                <Check size={13} className="text-green-400" />
-                <span className="text-green-400 font-semibold">¡Copiado!</span>
+                <Crown size={12} className="text-amber-400" />
+                <span>Host (Guardando en nube)</span>
               </>
             ) : (
               <>
-                <Copy size={13} />
-                <span>Copiar</span>
+                <User size={12} className="text-gray-400" />
+                <span>Invitado (Sincronizado en RAM)</span>
               </>
             )}
-          </button>
-        </div>
-      )}
+          </span>
 
-      {/* ─── WebRTC Connection Status ─── */}
-      {roomId && (
-        <div
-          className="flex items-center gap-1.5 px-2 py-1 rounded bg-gray-700/50 border border-gray-600/40 text-[11px]"
-          title={`Estado de sincronización WebRTC: ${connectionStatus}`}
-        >
-          {connectionStatus === "connected" ? (
-            <>
-              <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.7)]" />
-              <span className="text-emerald-300 font-medium">Conectado</span>
-            </>
-          ) : connectionStatus === "connecting" ? (
-            <>
-              <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
-              <span className="text-amber-300 font-medium">Conectando…</span>
-            </>
-          ) : (
-            <>
-              <span className="w-2 h-2 rounded-full bg-rose-500" />
-              <span className="text-rose-300 font-medium">Desconectado</span>
-            </>
+          {/* WebRTC Room & Copy Button */}
+          {roomId && (
+            <div className="flex items-center gap-1 bg-gray-700/70 border border-gray-600/60 rounded px-2 py-1">
+              <span className="text-gray-400 font-mono text-[11px] truncate max-w-28">
+                Sala: {roomId.slice(0, 8)}…
+              </span>
+              <button
+                onClick={handleCopyRoom}
+                className="flex items-center gap-1 text-[11px] font-medium text-gray-300 hover:text-white transition-colors cursor-pointer ml-1 pl-1.5 border-l border-gray-600"
+                title="Copiar UUID de la sala para invitar compañeros"
+              >
+                {copied ? (
+                  <>
+                    <Check size={13} className="text-green-400" />
+                    <span className="text-green-400 font-semibold">¡Copiado!</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy size={13} />
+                    <span>Copiar</span>
+                  </>
+                )}
+              </button>
+            </div>
           )}
-        </div>
-      )}
 
-      {/* ─── Host / Guest Badge (Leader Election) ─── */}
-      {projectPath && (
-        <span
-          className={`flex items-center gap-1.5 px-2.5 py-1 rounded font-medium text-[11px] ${
-            isHost
-              ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
-              : "bg-gray-700/70 text-gray-300 border border-gray-600/50"
-          }`}
-          title={
-            isHost
-              ? "Eres el Host: tu cliente guarda en disco cada 1.5s para sincronizar con la nube."
-              : "Eres Invitado: sincronizado en RAM con el enjambre P2P sin escribir en disco."
-          }
-        >
-          {isHost ? (
-            <>
-              <Crown size={12} className="text-amber-400" />
-              <span>Host (Guardando en nube)</span>
-            </>
-          ) : (
-            <>
-              <User size={12} className="text-gray-400" />
-              <span>Invitado (Sincronizado en RAM)</span>
-            </>
-          )}
-        </span>
-      )}
-
-      {/* ─── Connected Peers Avatars ─── */}
-      {roomId && peers.length > 0 && (
-        <div className="flex items-center gap-1.5 ml-1 pl-2 border-l border-gray-700">
-          <div className="flex items-center gap-1 text-gray-400 text-[11px] mr-1">
-            <Users size={13} />
-            <span>{peers.length}</span>
+          {/* WebRTC Connection Status */}
+          <div
+            className="flex items-center gap-1.5 px-2 py-1 rounded bg-gray-700/50 border border-gray-600/40 text-[11px]"
+            title={`Estado de sincronización WebRTC: ${connectionStatus}`}
+          >
+            {connectionStatus === "connected" ? (
+              <>
+                <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.7)]" />
+                <span className="text-emerald-300 font-medium">Conectado</span>
+              </>
+            ) : connectionStatus === "connecting" ? (
+              <>
+                <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                <span className="text-amber-300 font-medium">Conectando…</span>
+              </>
+            ) : (
+              <>
+                <span className="w-2 h-2 rounded-full bg-rose-500" />
+                <span className="text-rose-300 font-medium">Desconectado</span>
+              </>
+            )}
           </div>
 
-          <div className="flex items-center -space-x-1.5 overflow-visible">
-            {peers.map((peer) => {
-              const initial = (peer.name || "U").charAt(0).toUpperCase();
-              return (
-                <div
-                  key={peer.clientID}
-                  className="relative group cursor-pointer"
-                >
-                  <div
-                    className="w-6 h-6 rounded-full flex items-center justify-center font-bold text-[11px] text-white ring-2 ring-gray-800 shadow"
-                    style={{ backgroundColor: peer.color }}
-                  >
-                    {initial}
-                  </div>
+          {/* Connected Peers Avatars */}
+          {peers.length > 0 && (
+            <div className="flex items-center gap-1.5 ml-1 pl-2 border-l border-gray-700">
+              <div className="flex items-center gap-1 text-gray-400 text-[11px] mr-1">
+                <Users size={13} />
+                <span>{peers.length}</span>
+              </div>
 
-                  {peer.isHost && (
-                    <div className="absolute -top-1 -right-1 bg-amber-400 text-gray-950 rounded-full p-0.5 ring-1 ring-gray-900 shadow">
-                      <Crown size={8} />
+              <div className="flex items-center -space-x-1.5 overflow-visible">
+                {peers.map((peer) => {
+                  const initial = (peer.name || "U").charAt(0).toUpperCase();
+                  return (
+                    <div
+                      key={peer.clientID}
+                      className="relative group cursor-pointer"
+                    >
+                      <div
+                        className="w-6 h-6 rounded-full flex items-center justify-center font-bold text-[11px] text-white ring-2 ring-gray-800 shadow"
+                        style={{ backgroundColor: peer.color }}
+                      >
+                        {initial}
+                      </div>
+
+                      {peer.isHost && (
+                        <div className="absolute -top-1 -right-1 bg-amber-400 text-gray-950 rounded-full p-0.5 ring-1 ring-gray-900 shadow">
+                          <Crown size={8} />
+                        </div>
+                      )}
+
+                      {/* Tooltip */}
+                      <div className="absolute left-1/2 -translate-x-1/2 top-full mt-1.5 hidden group-hover:flex flex-col items-center bg-gray-950 text-white text-[10px] px-2 py-1 rounded shadow-lg border border-gray-800 whitespace-nowrap z-50 pointer-events-none">
+                        <span className="font-semibold">
+                          {peer.name} {peer.isSelf && "(Tú)"}
+                        </span>
+                        <span className="text-gray-400 text-[9px]">
+                          {peer.isHost
+                            ? "👑 Host (Guardando en nube)"
+                            : "👤 Invitado (Sincronizado en RAM)"}{" "}
+                          • ID: {peer.clientID.toString().slice(-4)}
+                        </span>
+                      </div>
                     </div>
-                  )}
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
-                  {/* Tooltip */}
-                  <div className="absolute left-1/2 -translate-x-1/2 top-full mt-1.5 hidden group-hover:flex flex-col items-center bg-gray-950 text-white text-[10px] px-2 py-1 rounded shadow-lg border border-gray-800 whitespace-nowrap z-50 pointer-events-none">
-                    <span className="font-semibold">
-                      {peer.name} {peer.isSelf && "(Tú)"}
-                    </span>
-                    <span className="text-gray-400 text-[9px]">
-                      {peer.isHost
-                        ? "👑 Host (Guardando en nube)"
-                        : "👤 Invitado (Sincronizado en RAM)"}{" "}
-                      • ID: {peer.clientID.toString().slice(-4)}
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
+          {/* Button: Desconectar P2P / Modo Local */}
+          <button
+            onClick={onStopCollab}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-gray-700/60 hover:bg-rose-500/20 text-gray-300 hover:text-rose-300 border border-gray-600/50 hover:border-rose-500/40 font-medium text-[11px] transition-colors cursor-pointer"
+            title="Desconectar WebRTC y volver al modo individual local"
+          >
+            <WifiOff size={13} />
+            <span>Desconectar P2P / Modo Local</span>
+          </button>
+        </>
       )}
 
       {/* Spacer */}
@@ -287,14 +337,13 @@ export default function Toolbar({
         </button>
 
         {isProfileOpen && (
-          <div className="absolute right-0 top-full mt-2 w-56 bg-gray-900 border border-gray-700 rounded-lg shadow-xl p-3 z-50 text-gray-200">
-            <div className="flex items-center gap-1.5 mb-2 font-semibold text-xs text-gray-300">
-              <User size={14} />
-              <span>Perfil Colaborativo</span>
-            </div>
+          <div className="absolute right-0 top-full mt-1.5 w-60 bg-gray-900 border border-gray-700 rounded-lg p-3 shadow-2xl z-50 flex flex-col gap-3">
+            <span className="text-[11px] font-semibold text-gray-300 uppercase tracking-wider">
+              Perfil de Colaboración
+            </span>
 
             {/* Name Input */}
-            <div className="mb-3">
+            <div>
               <label className="block text-[11px] text-gray-400 mb-1">
                 Tu Nombre:
               </label>

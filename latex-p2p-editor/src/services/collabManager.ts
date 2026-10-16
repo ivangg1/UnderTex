@@ -1,9 +1,16 @@
-// Collaboration Manager: Y.Doc, WebrtcProvider, Awareness, and Dynamic Leader Election
-// Following SPEC.md Sections 4.A and 4.B
+// Collaboration Manager: Dual Mode (Solo/Local vs Collab/P2P)
+// Following SPEC.md Section 4.A, 4.B, and 4.D
 
 import * as Y from "yjs";
 import { WebrtcProvider } from "y-webrtc";
-import { saveProjectState } from "./tauriBridge";
+import { Awareness } from "y-protocols/awareness";
+import {
+  saveTexAtomic,
+  saveProjectState,
+  initCollabProject,
+} from "./tauriBridge";
+
+export type CollabMode = "solo" | "collab";
 
 export interface CollabUser {
   name: string;
@@ -22,15 +29,18 @@ export interface PeerInfo {
 export type ConnectionStatus = "connecting" | "connected" | "disconnected";
 
 export interface CollabCallbacks {
+  onModeChange?: (mode: CollabMode) => void;
   onHostChange?: (isHost: boolean) => void;
   onPeersChange?: (peers: PeerInfo[]) => void;
   onStatusChange?: (status: ConnectionStatus) => void;
   onContentChange?: (content: string) => void;
+  onRoomIdChange?: (roomId: string | null) => void;
 }
 
 export interface CollabSessionConfig {
   projectPath: string;
-  roomId: string;
+  isCollab: boolean;
+  roomId?: string | null;
   initialTexContent: string;
   initialCrdtState: number[] | null;
   currentUser: CollabUser;
@@ -62,28 +72,35 @@ export function getSignalingServers(): string[] {
 
 /**
  * Manages the Yjs CRDT document, WebRTC P2P sync, awareness, dynamic host election,
- * and conflict-free cloud persistence.
+ * and conflict-free cloud persistence with dual-mode operation (Solo vs Collab).
  */
 export class CollabManager {
   public doc: Y.Doc;
   public ytext: Y.Text;
-  public provider: WebrtcProvider;
-  public isHost: boolean = false;
+  public awareness: Awareness;
+  public provider: WebrtcProvider | null = null;
+  public mode: CollabMode = "solo";
+  public roomId: string | null = null;
+  public isHost: boolean = true;
   public peers: PeerInfo[] = [];
-  public status: ConnectionStatus = "connecting";
+  public status: ConnectionStatus = "disconnected";
 
   private projectPath: string;
+  private currentUser: CollabUser;
   private callbacks?: CollabCallbacks;
   private saveTimeout: ReturnType<typeof setTimeout> | null = null;
   private isDestroyed: boolean = false;
 
   constructor(config: CollabSessionConfig) {
     this.projectPath = config.projectPath;
+    this.currentUser = config.currentUser;
     this.callbacks = config.callbacks;
+    this.roomId = config.roomId ?? null;
 
-    // 1. Initialize Y.Doc and Y.Text
+    // 1. Initialize Y.Doc, Y.Text, and local Awareness
     this.doc = new Y.Doc();
     this.ytext = this.doc.getText("codemirror");
+    this.awareness = new Awareness(this.doc);
 
     // 2. Conflict-free initial state restoration (SPEC 4.B.2)
     if (config.initialCrdtState && config.initialCrdtState.length > 0) {
@@ -99,27 +116,94 @@ export class CollabManager {
       this.ytext.insert(0, config.initialTexContent);
     }
 
-    // 3. Connect WebrtcProvider with fallback signaling servers
+    // Set user profile on local awareness
+    this.setAwarenessUser(config.currentUser);
+
+    // Observe document content changes
+    this.ytext.observe(() => {
+      if (this.isDestroyed) return;
+      this.callbacks?.onContentChange?.(this.ytext.toString());
+    });
+
+    // Observe document updates for debounced auto-save
+    this.doc.on("update", () => {
+      if (this.isDestroyed) return;
+      if (this.isHost) {
+        this.scheduleSave();
+      }
+    });
+
+    // 3. Initialize in requested mode (SPEC 4.D)
+    if (config.isCollab && config.roomId) {
+      this.mode = "collab";
+      this.connectWebRTC(config.roomId);
+    } else {
+      // Solo Mode: zero network traffic, permanent Host, clean local editing
+      this.mode = "solo";
+      this.isHost = true;
+      this.status = "disconnected";
+      this.peers = [];
+      this.callbacks?.onModeChange?.("solo");
+      this.callbacks?.onHostChange?.(true);
+      this.callbacks?.onPeersChange?.([]);
+      this.callbacks?.onStatusChange?.("disconnected");
+    }
+  }
+
+  /**
+   * Helper to set user metadata on awareness.
+   */
+  private setAwarenessUser(user: CollabUser) {
+    const colorLight = user.colorLight || `${user.color}33`;
+    this.awareness.setLocalStateField("user", {
+      name: user.name,
+      color: user.color,
+      colorLight,
+    });
+  }
+
+  /**
+   * Updates local awareness state with user's name and color.
+   */
+  public updateLocalUser(user: CollabUser) {
+    this.currentUser = user;
+    this.setAwarenessUser(user);
+    if (this.mode === "collab") {
+      this.handleAwarenessChange();
+    }
+  }
+
+  /**
+   * Connects WebrtcProvider to the existing in-memory document and awareness.
+   */
+  private connectWebRTC(roomId: string) {
+    if (this.provider) {
+      try {
+        this.provider.destroy();
+      } catch (e) {
+        // ignore
+      }
+    }
+
     const signaling = getSignalingServers();
-    this.provider = new WebrtcProvider(config.roomId, this.doc, {
+    this.provider = new WebrtcProvider(roomId, this.doc, {
       signaling,
+      awareness: this.awareness,
       maxConns: 30,
       filterBcConns: false, // Enable instant local sync across windows
       peerOpts: {},
     });
 
-    // 4. Set current user awareness
-    this.updateLocalUser(config.currentUser);
+    this.setAwarenessUser(this.currentUser);
 
-    // 5. Connection status handlers
     this.provider.on("status", (event: { connected: boolean }) => {
-      if (this.isDestroyed) return;
+      if (this.isDestroyed || this.mode !== "collab") return;
       this.status = event.connected ? "connected" : "connecting";
       this.callbacks?.onStatusChange?.(this.status);
     });
 
     this.provider.on("synced", (event: { synced: boolean }) => {
-      if (this.isDestroyed) return;
+      if (this.isDestroyed || this.mode !== "collab") return;
       if (event.synced) {
         this.status = "connected";
         this.callbacks?.onStatusChange?.(this.status);
@@ -128,45 +212,78 @@ export class CollabManager {
     });
 
     this.provider.on("peers", () => {
-      if (this.isDestroyed) return;
+      if (this.isDestroyed || this.mode !== "collab") return;
       this.handleAwarenessChange();
     });
 
-    // 6. Dynamic Leader Election (SPEC 4.A)
-    this.provider.awareness.on("change", () => {
-      if (this.isDestroyed) return;
+    this.awareness.on("change", () => {
+      if (this.isDestroyed || this.mode !== "collab") return;
       this.handleAwarenessChange();
     });
 
-    // Initial election check
     this.handleAwarenessChange();
-
-    // 7. Observe document content changes
-    this.ytext.observe(() => {
-      if (this.isDestroyed) return;
-      this.callbacks?.onContentChange?.(this.ytext.toString());
-    });
-
-    // 8. Debounced cloud persistence on doc update (SPEC 4.B.3)
-    this.doc.on("update", () => {
-      if (this.isDestroyed) return;
-      if (this.isHost) {
-        this.scheduleSave();
-      }
-    });
   }
 
   /**
-   * Updates local awareness state with user's name and color.
+   * Activate collaboration on demand (SPEC 4.D.2):
+   * 1. Invokes init_collab_project in Rust to create .texcollab/room.json.
+   * 2. Saves initial CRDT state vector to .texcollab/crdt_state.bin.
+   * 3. Hot-attaches WebrtcProvider to the existing in-memory Y.Doc without reload.
    */
-  public updateLocalUser(user: CollabUser) {
-    const colorLight = user.colorLight || `${user.color}33`;
-    this.provider.awareness.setLocalStateField("user", {
-      name: user.name,
-      color: user.color,
-      colorLight,
-    });
-    this.handleAwarenessChange();
+  public async startCollaboration(): Promise<string> {
+    if (this.mode === "collab" && this.roomId) {
+      return this.roomId;
+    }
+
+    // 1. Create .texcollab/room.json with a UUID
+    const roomId = await initCollabProject(this.projectPath);
+    this.roomId = roomId;
+
+    // 2. Persist initial CRDT binary state and main.tex
+    const text = this.ytext.toString();
+    const crdtState = Array.from(Y.encodeStateAsUpdate(this.doc));
+    await saveProjectState(this.projectPath, text, crdtState);
+
+    // 3. Switch mode to collab and hot-attach WebrtcProvider
+    this.mode = "collab";
+    this.callbacks?.onModeChange?.("collab");
+    this.callbacks?.onRoomIdChange?.(roomId);
+
+    this.connectWebRTC(roomId);
+
+    return roomId;
+  }
+
+  /**
+   * Disconnects WebRTC collaboration and returns to Solo / Local Mode (SPEC 4.D.3).
+   */
+  public async stopCollaboration(): Promise<void> {
+    if (this.mode === "solo") return;
+
+    // 1. Disconnect and destroy WebrtcProvider
+    if (this.provider) {
+      try {
+        this.provider.disconnect();
+        this.provider.destroy();
+      } catch (err) {
+        console.error("CollabManager: Error disconnecting provider:", err);
+      }
+      this.provider = null;
+    }
+
+    // 2. Switch mode to solo, set Host = true, clear peers
+    this.mode = "solo";
+    this.isHost = true;
+    this.peers = [];
+    this.status = "disconnected";
+
+    this.callbacks?.onModeChange?.("solo");
+    this.callbacks?.onHostChange?.(true);
+    this.callbacks?.onPeersChange?.([]);
+    this.callbacks?.onStatusChange?.("disconnected");
+
+    // 3. Flush save to main.tex
+    await this.flushSave();
   }
 
   /**
@@ -184,12 +301,14 @@ export class CollabManager {
 
   /**
    * Dynamic Host Election algorithm (SPEC 4.A):
-   * 1. Collect active clientIDs from provider.awareness.
+   * 1. Collect active clientIDs from awareness.
    * 2. Sort active clientIDs ascending.
    * 3. Lowest clientID is the Active Host. Automatic failover on disconnect.
    */
   private handleAwarenessChange() {
-    const states = this.provider.awareness.getStates();
+    if (this.mode !== "collab") return;
+
+    const states = this.awareness.getStates();
     const activeClientIDs = Array.from(states.keys()).filter((cid) => {
       if (cid === this.doc.clientID) return true;
       const state = states.get(cid);
@@ -243,9 +362,9 @@ export class CollabManager {
   }
 
   /**
-   * Debounced save to disk (SPEC 4.B.3):
-   * ONLY the Active Host writes to main.tex and crdt_state.bin.
-   * Debounced to 1500ms after edits.
+   * Debounced save to disk (SPEC 4.B.1 & 4.B.3):
+   * - In Solo Mode: saves ONLY to main.tex via saveTexAtomic (never touches .texcollab/).
+   * - In Collab Mode: only the Host saves both main.tex and .texcollab/crdt_state.bin.
    */
   private scheduleSave() {
     if (!this.isHost || this.isDestroyed) return;
@@ -258,8 +377,12 @@ export class CollabManager {
       if (!this.isHost || this.isDestroyed) return;
       try {
         const text = this.ytext.toString();
-        const crdtState = Array.from(Y.encodeStateAsUpdate(this.doc));
-        await saveProjectState(this.projectPath, text, crdtState);
+        if (this.mode === "solo") {
+          await saveTexAtomic(this.projectPath, text);
+        } else {
+          const crdtState = Array.from(Y.encodeStateAsUpdate(this.doc));
+          await saveProjectState(this.projectPath, text, crdtState);
+        }
       } catch (err) {
         console.error("CollabManager: Auto-save to disk failed:", err);
       }
@@ -277,15 +400,19 @@ export class CollabManager {
     }
     try {
       const text = this.ytext.toString();
-      const crdtState = Array.from(Y.encodeStateAsUpdate(this.doc));
-      await saveProjectState(this.projectPath, text, crdtState);
+      if (this.mode === "solo") {
+        await saveTexAtomic(this.projectPath, text);
+      } else {
+        const crdtState = Array.from(Y.encodeStateAsUpdate(this.doc));
+        await saveProjectState(this.projectPath, text, crdtState);
+      }
     } catch (err) {
       console.error("CollabManager: Flush save failed:", err);
     }
   }
 
   /**
-   * Cleanly disconnects and tears down provider and document.
+   * Cleanly disconnects and tears down provider, awareness, and document.
    */
   public destroy() {
     this.isDestroyed = true;
@@ -294,8 +421,12 @@ export class CollabManager {
       this.saveTimeout = null;
     }
     try {
-      this.provider.disconnect();
-      this.provider.destroy();
+      if (this.provider) {
+        this.provider.disconnect();
+        this.provider.destroy();
+        this.provider = null;
+      }
+      this.awareness.destroy();
       this.doc.destroy();
     } catch (err) {
       console.error("CollabManager: Error during destroy:", err);
