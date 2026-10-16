@@ -20,15 +20,20 @@ import type * as Y from "yjs";
 import type { Awareness } from "y-protocols/awareness";
 
 function getSavedUser(): CollabUser {
-  const savedName = localStorage.getItem("latex_user_name");
-  const savedColor = localStorage.getItem("latex_user_color");
+  // Use sessionStorage so multiple windows/instances get distinct names and colors
+  const savedName = sessionStorage.getItem("latex_user_name");
+  const savedColor = sessionStorage.getItem("latex_user_color");
 
-  const name =
-    savedName || `Usuario_${Math.floor(1000 + Math.random() * 9000)}`;
+  if (savedName && savedColor) {
+    return { name: savedName, color: savedColor };
+  }
+
+  const name = `Usuario_${Math.floor(1000 + Math.random() * 9000)}`;
   const color =
-    savedColor ||
     PRESET_COLORS[Math.floor(Math.random() * PRESET_COLORS.length)];
 
+  sessionStorage.setItem("latex_user_name", name);
+  sessionStorage.setItem("latex_user_color", color);
   return { name, color };
 }
 
@@ -137,8 +142,8 @@ function App() {
 
   const handleUserChange = useCallback((updatedUser: CollabUser) => {
     setCurrentUser(updatedUser);
-    localStorage.setItem("latex_user_name", updatedUser.name);
-    localStorage.setItem("latex_user_color", updatedUser.color);
+    sessionStorage.setItem("latex_user_name", updatedUser.name);
+    sessionStorage.setItem("latex_user_color", updatedUser.color);
     if (collabManagerRef.current) {
       collabManagerRef.current.updateLocalUser(updatedUser);
     }

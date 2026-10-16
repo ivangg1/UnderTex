@@ -43,15 +43,21 @@ export interface CollabSessionConfig {
  */
 export function getSignalingServers(): string[] {
   const envServer = import.meta.env.VITE_SIGNALING_SERVER;
-  const defaults = [
+  const activeServers = [
+    // Official high-availability y-webrtc signaling servers
+    "wss://y-webrtc-eu.fly.dev",
+    "wss://y-webrtc.fly.dev",
+    // Local signaling server (0ms latency if running signaling-server/)
+    "ws://127.0.0.1:4444",
+    // Legacy public fallbacks
     "wss://signaling.yjs.dev",
     "wss://y-webrtc-signaling-eu.herokuapp.com",
   ];
 
   if (envServer && typeof envServer === "string" && envServer.trim() !== "") {
-    return [envServer.trim(), ...defaults];
+    return [envServer.trim(), ...activeServers];
   }
-  return defaults;
+  return activeServers;
 }
 
 /**
@@ -97,8 +103,8 @@ export class CollabManager {
     const signaling = getSignalingServers();
     this.provider = new WebrtcProvider(config.roomId, this.doc, {
       signaling,
-      maxConns: 25,
-      filterBcConns: true,
+      maxConns: 30,
+      filterBcConns: false, // Enable instant local sync across windows
       peerOpts: {},
     });
 
@@ -119,6 +125,11 @@ export class CollabManager {
         this.callbacks?.onStatusChange?.(this.status);
         this.handleAwarenessChange();
       }
+    });
+
+    this.provider.on("peers", () => {
+      if (this.isDestroyed) return;
+      this.handleAwarenessChange();
     });
 
     // 6. Dynamic Leader Election (SPEC 4.A)
