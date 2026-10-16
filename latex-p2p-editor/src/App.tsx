@@ -8,6 +8,7 @@ import {
   pickProjectFolder,
   readProject,
   compileLatex,
+  openNewWindow,
 } from "./services/tauriBridge";
 import {
   CollabManager,
@@ -122,6 +123,16 @@ function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleCompile]);
 
+  // ─── New Window Handler ───────────────────────────────────────────
+
+  const handleNewWindow = useCallback(async () => {
+    try {
+      await openNewWindow();
+    } catch (err) {
+      console.error("Failed to open new window:", err);
+    }
+  }, []);
+
   // ─── User Profile Handler ─────────────────────────────────────────
 
   const handleUserChange = useCallback((updatedUser: CollabUser) => {
@@ -205,6 +216,7 @@ function App() {
         currentUser={currentUser}
         onUserChange={handleUserChange}
         onOpenFolder={handleOpenFolder}
+        onNewWindow={handleNewWindow}
         onCompile={handleCompile}
       />
 

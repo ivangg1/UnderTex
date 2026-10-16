@@ -12,6 +12,7 @@ import {
   User,
   Users,
   ChevronDown,
+  PlusSquare,
 } from "lucide-react";
 import type { PeerInfo, ConnectionStatus, CollabUser } from "../services/collabManager";
 
@@ -36,6 +37,7 @@ interface ToolbarProps {
   currentUser: CollabUser;
   onUserChange: (user: CollabUser) => void;
   onOpenFolder: () => void;
+  onNewWindow: () => void;
   onCompile: () => void;
 }
 
@@ -49,6 +51,7 @@ export default function Toolbar({
   currentUser,
   onUserChange,
   onOpenFolder,
+  onNewWindow,
   onCompile,
 }: ToolbarProps) {
   const [copied, setCopied] = useState(false);
@@ -114,6 +117,16 @@ export default function Toolbar({
       >
         <FolderOpen size={15} />
         <span>Abrir</span>
+      </button>
+
+      {/* ─── New Window (for P2P Collaboration Testing) ─── */}
+      <button
+        onClick={onNewWindow}
+        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 hover:text-white font-medium transition-colors cursor-pointer"
+        title="Abrir una nueva ventana para probar colaboración lado a lado"
+      >
+        <PlusSquare size={14} />
+        <span>+ Ventana</span>
       </button>
 
       {/* Project name */}

@@ -280,6 +280,18 @@ fn compile_latex(project_path: String, tex_content: String) -> Result<CompileRes
     }
 }
 
+/// Open a new desktop window for testing collaboration or multi-project editing.
+#[tauri::command]
+async fn open_new_window(app: tauri::AppHandle) -> Result<(), String> {
+    let window_id = format!("win_{}", Uuid::new_v4());
+    tauri::WebviewWindowBuilder::new(&app, &window_id, tauri::WebviewUrl::default())
+        .title("LaTeX P2P Editor")
+        .inner_size(1280.0, 800.0)
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ─── App bootstrap ──────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -292,6 +304,7 @@ pub fn run() {
             save_tex_atomic,
             save_crdt_state,
             compile_latex,
+            open_new_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

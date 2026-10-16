@@ -69,3 +69,11 @@ export async function compileLatex(
 ): Promise<CompileResult> {
   return invoke<CompileResult>("compile_latex", { projectPath, texContent });
 }
+
+/**
+ * Open a new application window for side-by-side collaborative testing.
+ */
+export async function openNewWindow(): Promise<void> {
+  return invoke("open_new_window");
+}
+
