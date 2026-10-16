@@ -1,15 +1,35 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import "./App.css";
 
-import Toolbar from "./components/Toolbar";
+import Toolbar, { PRESET_COLORS } from "./components/Toolbar";
 import LatexEditor from "./components/LatexEditor";
 import PdfPreview from "./components/PdfPreview";
 import {
   pickProjectFolder,
   readProject,
-  saveTexAtomic,
   compileLatex,
 } from "./services/tauriBridge";
+import {
+  CollabManager,
+  type CollabUser,
+  type PeerInfo,
+  type ConnectionStatus,
+} from "./services/collabManager";
+import type * as Y from "yjs";
+import type { Awareness } from "y-protocols/awareness";
+
+function getSavedUser(): CollabUser {
+  const savedName = localStorage.getItem("latex_user_name");
+  const savedColor = localStorage.getItem("latex_user_color");
+
+  const name =
+    savedName || `Usuario_${Math.floor(1000 + Math.random() * 9000)}`;
+  const color =
+    savedColor ||
+    PRESET_COLORS[Math.floor(Math.random() * PRESET_COLORS.length)];
+
+  return { name, color };
+}
 
 function App() {
   // ─── State ──────────────────────────────────────────────────────
@@ -17,12 +37,23 @@ function App() {
   const [roomId, setRoomId] = useState<string | null>(null);
   const [texContent, setTexContent] = useState<string>("");
   const [isProjectLoaded, setIsProjectLoaded] = useState(false);
+
+  // Collaboration State
+  const [currentUser, setCurrentUser] = useState<CollabUser>(getSavedUser);
+  const [isHost, setIsHost] = useState(true);
+  const [peers, setPeers] = useState<PeerInfo[]>([]);
+  const [connectionStatus, setConnectionStatus] =
+    useState<ConnectionStatus>("connecting");
+  const [collabYText, setCollabYText] = useState<Y.Text | null>(null);
+  const [collabAwareness, setCollabAwareness] = useState<Awareness | null>(null);
+
+  // PDF Preview & Compiler State
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [logs, setLogs] = useState<string | null>(null);
   const [isCompiling, setIsCompiling] = useState(false);
   const [compileError, setCompileError] = useState<string | null>(null);
 
-  // Keep a ref to current texContent and projectPath for shortcut handlers
+  const collabManagerRef = useRef<CollabManager | null>(null);
   const texContentRef = useRef(texContent);
   texContentRef.current = texContent;
 
@@ -31,9 +62,6 @@ function App() {
 
   const prevPdfUrlRef = useRef<string | null>(null);
 
-  // Phase 1: single user is always Host
-  const isHost = true;
-
   // ─── Compile Handler ─────────────────────────────────────────────
 
   const handleCompile = useCallback(async () => {
@@ -41,7 +69,7 @@ function App() {
     const currentContent = texContentRef.current;
 
     if (!currentPath) {
-      setLogs("Please open a project folder first before compiling.");
+      setLogs("Por favor abre una carpeta de proyecto antes de compilar.");
       return;
     }
 
@@ -49,9 +77,9 @@ function App() {
     setCompileError(null);
 
     try {
-      // If host, also ensure the main.tex is saved to disk
-      if (isHost) {
-        saveTexAtomic(currentPath, currentContent).catch(console.error);
+      // Flush save to disk if currently Host
+      if (collabManagerRef.current?.isHost) {
+        await collabManagerRef.current.flushSave();
       }
 
       const result = await compileLatex(currentPath, currentContent);
@@ -78,7 +106,7 @@ function App() {
     } finally {
       setIsCompiling(false);
     }
-  }, [isHost]);
+  }, []);
 
   // ─── Global Cmd+S / Ctrl+S shortcut ──────────────────────────────
 
@@ -94,7 +122,18 @@ function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleCompile]);
 
-  // ─── Folder & Editor Handlers ────────────────────────────────────
+  // ─── User Profile Handler ─────────────────────────────────────────
+
+  const handleUserChange = useCallback((updatedUser: CollabUser) => {
+    setCurrentUser(updatedUser);
+    localStorage.setItem("latex_user_name", updatedUser.name);
+    localStorage.setItem("latex_user_color", updatedUser.color);
+    if (collabManagerRef.current) {
+      collabManagerRef.current.updateLocalUser(updatedUser);
+    }
+  }, []);
+
+  // ─── Open Project Folder Handler ──────────────────────────────────
 
   const handleOpenFolder = useCallback(async () => {
     try {
@@ -102,9 +141,39 @@ function App() {
       if (!folder) return;
 
       const project = await readProject(folder);
+
+      // Clean up previous collab session if any
+      if (collabManagerRef.current) {
+        collabManagerRef.current.destroy();
+        collabManagerRef.current = null;
+      }
+
+      // Initialize new P2P Collaboration Session
+      const manager = new CollabManager({
+        projectPath: project.project_path,
+        roomId: project.room_id,
+        initialTexContent: project.tex_content,
+        initialCrdtState: project.crdt_state,
+        currentUser,
+        callbacks: {
+          onHostChange: (newHost) => setIsHost(newHost),
+          onPeersChange: (newPeers) => setPeers(newPeers),
+          onStatusChange: (newStatus) => setConnectionStatus(newStatus),
+          onContentChange: (newContent) => setTexContent(newContent),
+        },
+      });
+
+      collabManagerRef.current = manager;
+
       setProjectPath(project.project_path);
       setRoomId(project.room_id);
-      setTexContent(project.tex_content);
+      setTexContent(manager.ytext.toString());
+      setCollabYText(manager.ytext);
+      setCollabAwareness(manager.provider.awareness);
+      setIsHost(manager.isHost);
+      setPeers(manager.peers);
+      setConnectionStatus(manager.status);
+
       setIsProjectLoaded(true);
       setPdfUrl(null);
       setLogs(null);
@@ -112,47 +181,55 @@ function App() {
     } catch (err) {
       console.error("Failed to open project:", err);
     }
-  }, []);
+  }, [currentUser]);
 
-  const handleChange = useCallback(
-    (content: string) => {
-      setTexContent(content);
-      // Auto-save for Host
-      if (isHost && projectPath) {
-        saveTexAtomic(projectPath, content).catch(console.error);
-      }
-    },
-    [isHost, projectPath]
-  );
+  // Clean up on component unmount
+  useEffect(() => {
+    return () => {
+      collabManagerRef.current?.destroy();
+    };
+  }, []);
 
   // ─── Render ─────────────────────────────────────────────────────
 
   return (
-    <div className="h-screen flex flex-col bg-gray-900 text-white overflow-hidden">
-      {/* Top toolbar */}
+    <div className="h-screen flex flex-col bg-gray-900 text-white overflow-hidden font-sans">
+      {/* Top Toolbar */}
       <Toolbar
         projectPath={projectPath}
         roomId={roomId}
         isHost={isHost}
         isCompiling={isCompiling}
+        connectionStatus={connectionStatus}
+        peers={peers}
+        currentUser={currentUser}
+        onUserChange={handleUserChange}
         onOpenFolder={handleOpenFolder}
         onCompile={handleCompile}
       />
 
-      {/* Main split pane: editor 50% | preview 50% */}
+      {/* Main split pane: Editor 50% | Preview 50% */}
       <div className="flex-1 flex min-h-0">
-        {/* Left: Editor */}
+        {/* Left: CodeMirror 6 Editor with Yjs Collaboration */}
         <div className="w-1/2 min-h-0 border-r border-gray-700">
           {isProjectLoaded ? (
             <LatexEditor
-              key={projectPath}
+              key={`${projectPath}_${roomId}`}
               initialContent={texContent}
-              onChange={handleChange}
+              ytext={collabYText}
+              awareness={collabAwareness}
+              onChange={setTexContent}
               onCompile={handleCompile}
             />
           ) : (
-            <div className="h-full flex items-center justify-center text-gray-500 text-sm">
-              Open a project folder to start editing
+            <div className="h-full flex flex-col items-center justify-center text-gray-500 text-sm gap-2 select-none">
+              <p>Abre una carpeta de proyecto para comenzar a colaborar y editar.</p>
+              <button
+                onClick={handleOpenFolder}
+                className="mt-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded font-medium text-xs transition-colors cursor-pointer"
+              >
+                Abrir Carpeta
+              </button>
             </div>
           )}
         </div>

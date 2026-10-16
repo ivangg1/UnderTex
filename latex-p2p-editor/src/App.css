@@ -1,1 +1,42 @@
 @import "tailwindcss";
+
+/* ─── Remote Cursor & Collaborative Selection Styles (y-codemirror.next) ─── */
+.cm-ySelection {
+  opacity: 0.35;
+}
+
+.cm-ySelectionCaret {
+  position: relative;
+  border-left: 2px solid;
+  margin-left: -1px;
+  margin-right: -1px;
+  box-sizing: border-box;
+  display: inline;
+}
+
+.cm-ySelectionCaretDot {
+  border-radius: 50%;
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  top: -3px;
+  left: -4px;
+}
+
+.cm-ySelectionInfo {
+  position: absolute;
+  top: -1.35em;
+  left: -2px;
+  font-size: 10px;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-weight: 600;
+  line-height: normal;
+  user-select: none;
+  color: #ffffff;
+  padding: 1px 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 100;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
+}
