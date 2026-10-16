@@ -193,19 +193,28 @@ export default function Toolbar({
       {/* ─── Host / Guest Badge (Leader Election) ─── */}
       {projectPath && (
         <span
-          className={`flex items-center gap-1 px-2 py-1 rounded font-medium text-[11px] ${
+          className={`flex items-center gap-1.5 px-2.5 py-1 rounded font-medium text-[11px] ${
             isHost
               ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
               : "bg-gray-700/70 text-gray-300 border border-gray-600/50"
           }`}
           title={
             isHost
-              ? "Eres el Host: tu cliente escribe atómicamente a disco para evitar conflictos en la nube."
-              : "Eres Invitado: sincronizas en memoria con el enjambre P2P."
+              ? "Eres el Host: tu cliente guarda en disco cada 1.5s para sincronizar con la nube."
+              : "Eres Invitado: sincronizado en RAM con el enjambre P2P sin escribir en disco."
           }
         >
-          <Crown size={12} className={isHost ? "text-amber-400" : "opacity-60"} />
-          {isHost ? "Host Activo" : "Invitado"}
+          {isHost ? (
+            <>
+              <Crown size={12} className="text-amber-400" />
+              <span>Host (Guardando en nube)</span>
+            </>
+          ) : (
+            <>
+              <User size={12} className="text-gray-400" />
+              <span>Invitado (Sincronizado en RAM)</span>
+            </>
+          )}
         </span>
       )}
 
@@ -244,8 +253,10 @@ export default function Toolbar({
                       {peer.name} {peer.isSelf && "(Tú)"}
                     </span>
                     <span className="text-gray-400 text-[9px]">
-                      {peer.isHost ? "👑 Host Activo" : "👤 Invitado"} • ID:{" "}
-                      {peer.clientID.toString().slice(-4)}
+                      {peer.isHost
+                        ? "👑 Host (Guardando en nube)"
+                        : "👤 Invitado (Sincronizado en RAM)"}{" "}
+                      • ID: {peer.clientID.toString().slice(-4)}
                     </span>
                   </div>
                 </div>

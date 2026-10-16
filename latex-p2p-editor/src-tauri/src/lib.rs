@@ -215,6 +215,18 @@ fn save_crdt_state(project_path: String, crdt_binary: Vec<u8>) -> Result<(), Str
     Ok(())
 }
 
+/// Atomically persist both `main.tex` and `.texcollab/crdt_state.bin` (SPEC 4.B.3).
+#[tauri::command]
+fn save_project_state(
+    project_path: String,
+    tex_content: String,
+    crdt_binary: Vec<u8>,
+) -> Result<(), String> {
+    save_tex_atomic(project_path.clone(), tex_content)?;
+    save_crdt_state(project_path, crdt_binary)?;
+    Ok(())
+}
+
 /// Compile LaTeX in a temporary OS directory so cloud folders are never polluted
 /// with .aux, .log, or conflicting .pdf files.
 #[tauri::command]
@@ -303,6 +315,7 @@ pub fn run() {
             read_project,
             save_tex_atomic,
             save_crdt_state,
+            save_project_state,
             compile_latex,
             open_new_window,
         ])
@@ -392,6 +405,32 @@ mod tests {
         let reloaded = read_project(dir_str).expect("Reload project failed");
         assert_eq!(reloaded.tex_content, new_content);
         assert_eq!(reloaded.crdt_state, Some(dummy_crdt));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_save_project_state_persists_both_atomically() {
+        let dir = create_temp_test_dir("save_project_state");
+        let dir_str = dir.to_str().unwrap().to_string();
+
+        let initial = read_project(dir_str.clone()).expect("Read failed");
+        assert_eq!(initial.crdt_state, None);
+
+        let updated_tex = "\\documentclass{article}\n\\begin{document}\nState Save\n\\end{document}";
+        let crdt_data = vec![0xCA, 0xFE, 0xBA, 0xBE];
+
+        save_project_state(dir_str.clone(), updated_tex.to_string(), crdt_data.clone())
+            .expect("save_project_state failed");
+
+        assert_eq!(
+            fs::read_to_string(dir.join("main.tex")).unwrap(),
+            updated_tex
+        );
+        assert_eq!(
+            fs::read(dir.join(".texcollab").join("crdt_state.bin")).unwrap(),
+            crdt_data
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

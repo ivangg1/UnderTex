@@ -60,6 +60,17 @@ export async function saveCrdtState(
 }
 
 /**
+ * Atomically save both main.tex and CRDT binary state in a single IPC call (SPEC 4.B.3).
+ */
+export async function saveProjectState(
+  projectPath: string,
+  texContent: string,
+  crdtBinary: number[]
+): Promise<void> {
+  return invoke("save_project_state", { projectPath, texContent, crdtBinary });
+}
+
+/**
  * Compile LaTeX with Tectonic (or pdflatex) in a temporary OS folder
  * using in-memory TeX content and project assets.
  */

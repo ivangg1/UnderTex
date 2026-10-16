@@ -3,7 +3,7 @@
 
 import * as Y from "yjs";
 import { WebrtcProvider } from "y-webrtc";
-import { saveTexAtomic, saveCrdtState } from "./tauriBridge";
+import { saveProjectState } from "./tauriBridge";
 
 export interface CollabUser {
   name: string;
@@ -170,15 +170,33 @@ export class CollabManager {
   }
 
   /**
+   * Pure leader election logic (SPEC 4.A):
+   * Lowest numerical clientID among active peers is the Host.
+   */
+  public static computeIsHost(
+    activeClientIDs: number[],
+    myClientID: number
+  ): boolean {
+    if (activeClientIDs.length === 0) return true;
+    const sorted = [...activeClientIDs].sort((a, b) => a - b);
+    return myClientID === sorted[0];
+  }
+
+  /**
    * Dynamic Host Election algorithm (SPEC 4.A):
    * 1. Collect active clientIDs from provider.awareness.
    * 2. Sort active clientIDs ascending.
    * 3. Lowest clientID is the Active Host. Automatic failover on disconnect.
    */
   private handleAwarenessChange() {
-    const activeClientIDs = Array.from(
-      this.provider.awareness.getStates().keys()
-    );
+    const states = this.provider.awareness.getStates();
+    const activeClientIDs = Array.from(states.keys()).filter((cid) => {
+      if (cid === this.doc.clientID) return true;
+      const state = states.get(cid);
+      return (
+        state !== null && state !== undefined && Object.keys(state).length > 0
+      );
+    });
 
     if (!activeClientIDs.includes(this.doc.clientID)) {
       activeClientIDs.push(this.doc.clientID);
@@ -186,7 +204,10 @@ export class CollabManager {
 
     activeClientIDs.sort((a, b) => a - b);
     const minClientID = activeClientIDs[0];
-    const newIsHost = this.doc.clientID === minClientID;
+    const newIsHost = CollabManager.computeIsHost(
+      activeClientIDs,
+      this.doc.clientID
+    );
 
     if (newIsHost !== this.isHost) {
       this.isHost = newIsHost;
@@ -194,11 +215,14 @@ export class CollabManager {
       // When becoming the new host, flush/schedule save
       if (this.isHost) {
         this.scheduleSave();
+      } else if (this.saveTimeout) {
+        // Demoted to guest: cancel any pending save immediately
+        clearTimeout(this.saveTimeout);
+        this.saveTimeout = null;
       }
     }
 
     // Build peer info list
-    const states = this.provider.awareness.getStates();
     this.peers = activeClientIDs.map((cid) => {
       const state = states.get(cid);
       const user = state?.user || {};
@@ -220,7 +244,8 @@ export class CollabManager {
 
   /**
    * Debounced save to disk (SPEC 4.B.3):
-   * Only the Active Host writes to main.tex and crdt_state.bin.
+   * ONLY the Active Host writes to main.tex and crdt_state.bin.
+   * Debounced to 1500ms after edits.
    */
   private scheduleSave() {
     if (!this.isHost || this.isDestroyed) return;
@@ -234,8 +259,7 @@ export class CollabManager {
       try {
         const text = this.ytext.toString();
         const crdtState = Array.from(Y.encodeStateAsUpdate(this.doc));
-        await saveTexAtomic(this.projectPath, text);
-        await saveCrdtState(this.projectPath, crdtState);
+        await saveProjectState(this.projectPath, text, crdtState);
       } catch (err) {
         console.error("CollabManager: Auto-save to disk failed:", err);
       }
@@ -254,8 +278,7 @@ export class CollabManager {
     try {
       const text = this.ytext.toString();
       const crdtState = Array.from(Y.encodeStateAsUpdate(this.doc));
-      await saveTexAtomic(this.projectPath, text);
-      await saveCrdtState(this.projectPath, crdtState);
+      await saveProjectState(this.projectPath, text, crdtState);
     } catch (err) {
       console.error("CollabManager: Flush save failed:", err);
     }
