@@ -26,7 +26,7 @@ struct ProjectData {
 }
 
 /// Result returned after compiling LaTeX
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 pub struct CompileResult {
     /// Raw bytes of the generated PDF
     pub pdf_bytes: Vec<u8>,
@@ -309,3 +309,166 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+// ─── Tests ──────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_temp_test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("test_latex_{}_{}", name, Uuid::new_v4()));
+        fs::create_dir_all(&dir).expect("Failed to create test temp dir");
+        dir
+    }
+
+    #[test]
+    fn test_ensure_room_meta_generates_and_persists_uuid() {
+        let dir = create_temp_test_dir("room_meta");
+        let room_id_1 = ensure_room_meta(&dir).expect("First room_id generation failed");
+
+        // Verify room_id is a valid UUID
+        assert!(Uuid::parse_str(&room_id_1).is_ok());
+
+        // Verify room.json file exists
+        let room_file = dir.join(".texcollab").join("room.json");
+        assert!(room_file.exists());
+
+        // Verify subsequent calls return the exact same deterministic UUID
+        let room_id_2 = ensure_room_meta(&dir).expect("Second room_id read failed");
+        assert_eq!(room_id_1, room_id_2);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_read_project_creates_starter_tex_if_missing() {
+        let dir = create_temp_test_dir("read_proj");
+        let dir_str = dir.to_str().unwrap().to_string();
+
+        let proj = read_project(dir_str).expect("Failed to read project");
+
+        // Must create main.tex with standard starter document
+        assert!(proj.tex_content.contains("\\documentclass{article}"));
+        assert!(proj.tex_content.contains("\\begin{document}"));
+        assert!(dir.join("main.tex").exists());
+
+        // Room ID must be valid and crdt_state must be None initially
+        assert!(Uuid::parse_str(&proj.room_id).is_ok());
+        assert!(proj.crdt_state.is_none());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_atomic_save_tex_and_crdt_persistence() {
+        let dir = create_temp_test_dir("atomic_save");
+        let dir_str = dir.to_str().unwrap().to_string();
+
+        // 1. Initial read
+        let _ = read_project(dir_str.clone()).expect("Initial read failed");
+
+        // 2. Save modified TeX atomically
+        let new_content = "\\documentclass{article}\n\\begin{document}\nModified Content\n\\end{document}";
+        save_tex_atomic(dir_str.clone(), new_content.to_string())
+            .expect("Atomic TeX save failed");
+
+        assert_eq!(
+            fs::read_to_string(dir.join("main.tex")).unwrap(),
+            new_content
+        );
+        // Ensure no temporary file left behind
+        assert!(!dir.join("main.tex.tmp").exists());
+
+        // 3. Save binary CRDT state
+        let dummy_crdt = vec![0x00, 0x01, 0x02, 0xFF, 0xFE];
+        save_crdt_state(dir_str.clone(), dummy_crdt.clone())
+            .expect("CRDT state save failed");
+
+        // Ensure no temporary CRDT file left behind
+        assert!(!dir.join(".texcollab").join("crdt_state.bin.tmp").exists());
+
+        // 4. Re-read project and verify CRDT state is restored
+        let reloaded = read_project(dir_str).expect("Reload project failed");
+        assert_eq!(reloaded.tex_content, new_content);
+        assert_eq!(reloaded.crdt_state, Some(dummy_crdt));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_copy_project_assets_filters_auxiliary_and_hidden_files() {
+        let src = create_temp_test_dir("assets_src");
+        let dst = create_temp_test_dir("assets_dst");
+
+        // Create assets and intermediate files
+        fs::write(src.join("figure.png"), b"dummy_png").unwrap();
+        fs::write(src.join("macros.sty"), b"dummy_sty").unwrap();
+        fs::write(src.join("main.tex"), b"original_tex").unwrap();
+        fs::write(src.join("main.aux"), b"aux_data").unwrap();
+        fs::write(src.join("main.log"), b"log_data").unwrap();
+        fs::write(src.join("test.tmp"), b"tmp_data").unwrap();
+
+        let hidden_dir = src.join(".texcollab");
+        fs::create_dir_all(&hidden_dir).unwrap();
+        fs::write(hidden_dir.join("room.json"), b"{}").unwrap();
+
+        // Run asset copy
+        copy_project_assets(&src, &dst).expect("copy_project_assets failed");
+
+        // Assets should be copied
+        assert!(dst.join("figure.png").exists());
+        assert!(dst.join("macros.sty").exists());
+
+        // main.tex, aux, log, tmp, and hidden files must NOT be copied
+        assert!(!dst.join("main.tex").exists());
+        assert!(!dst.join("main.aux").exists());
+        assert!(!dst.join("main.log").exists());
+        assert!(!dst.join("test.tmp").exists());
+        assert!(!dst.join(".texcollab").exists());
+
+        let _ = fs::remove_dir_all(&src);
+        let _ = fs::remove_dir_all(&dst);
+    }
+
+    #[test]
+    fn test_compile_latex_generates_pdf_without_polluting_project_folder() {
+        let dir = create_temp_test_dir("compile_test");
+        let dir_str = dir.to_str().unwrap().to_string();
+
+        let valid_tex = "\\documentclass{article}\n\\begin{document}\nAutomated Compilation Test\n\\end{document}";
+
+        let result = compile_latex(dir_str, valid_tex.to_string());
+        assert!(result.is_ok(), "Compilation should succeed: {:?}", result.err());
+
+        let output = result.unwrap();
+        // Check valid PDF header (%PDF-)
+        assert!(output.pdf_bytes.starts_with(b"%PDF-"));
+        assert!(!output.logs.is_empty());
+
+        // Verify project directory was NOT polluted with build files
+        assert!(!dir.join("main.aux").exists());
+        assert!(!dir.join("main.log").exists());
+        assert!(!dir.join("main.pdf").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_compile_latex_reports_syntax_error() {
+        let dir = create_temp_test_dir("compile_error");
+        let dir_str = dir.to_str().unwrap().to_string();
+
+        // Deliberately broken LaTeX syntax
+        let broken_tex = "\\documentclass{article}\n\\begin{document}\n\\undefinedMacroDoesNotExistNowhere\n\\end{document}";
+
+        let result = compile_latex(dir_str, broken_tex.to_string());
+        assert!(result.is_err(), "Compilation with undefined macro must fail");
+
+        let err_msg = result.unwrap_err();
+        assert!(err_msg.contains("Compilation did not produce main.pdf") || err_msg.contains("error"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
