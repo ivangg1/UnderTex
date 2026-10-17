@@ -11,6 +11,14 @@ import {
   getSignalingServers,
   DEFAULT_SIGNALING_SERVERS,
   SIGNALING_OVERRIDE_KEY,
+  deriveRoomPassword,
+  buildIceServers,
+  parseTurnConfig,
+  parseTurnUrls,
+  getIceServers,
+  hasTurnServer,
+  DEFAULT_STUN_SERVERS,
+  TURN_OVERRIDE_KEY,
   type SaveState,
   type ConnectionStatus,
 } from "../services/collabManager";
@@ -69,7 +77,12 @@ const { MockWebrtcProvider, MockSignalingConn } = vi.hoisted(() => {
   constructor(
     public roomName: string,
     public doc: Y.Doc,
-    public opts: { signaling: string[]; awareness: Awareness }
+    public opts: {
+      signaling: string[];
+      awareness: Awareness;
+      password?: string;
+      peerOpts?: { config?: { iceServers?: RTCIceServer[] } };
+    }
   ) {
     super();
     this.room = { peerId: `peer-${++providerSeq}`, webrtcConns: new Map(), bcConns: new Set() };
@@ -157,6 +170,11 @@ function sync(a: CollabManager, b: CollabManager) {
 }
 
 const latestProvider = () => MockWebrtcProvider.instances[MockWebrtcProvider.instances.length - 1];
+/** Reference SHA-256 (Web Crypto) to cross-check the synchronous lib0 implementation. */
+async function sha256Hex(input: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}
 const tick = () => vi.advanceTimersByTimeAsync(0);
 
 beforeEach(() => {
@@ -633,5 +651,151 @@ describe("Signaling server configuration", () => {
     expect(servers.slice(0, 2)).toEqual(["wss://my.server.example", "ws://10.0.0.5:4444"]);
     expect(servers).toEqual(expect.arrayContaining(DEFAULT_SIGNALING_SERVERS));
     expect(servers).not.toContain("not-a-url");
+  });
+});
+
+describe("Encrypted signaling (room password)", () => {
+  it("derives a deterministic SHA-256 password from the room id without exposing the id", async () => {
+    expect(deriveRoomPassword("room-1")).toBe(await sha256Hex("latexp2p:room-1"));
+    expect(deriveRoomPassword("room-1")).toBe(deriveRoomPassword("room-1"));
+    expect(deriveRoomPassword("room-1")).toMatch(/^[0-9a-f]{64}$/);
+    expect(deriveRoomPassword("room-1")).not.toBe(deriveRoomPassword("room-2"));
+    expect(deriveRoomPassword("room-1")).not.toContain("room-1");
+    expect(deriveRoomPassword("sala-ñ-ü")).toBe(await sha256Hex("latexp2p:sala-ñ-ü"));
+  });
+
+  it("passes the derived password to every WebrtcProvider (open with room and hot-attach)", async () => {
+    const joined = makeManager({ isCollab: true, roomId: "room-10" });
+    await tick();
+    expect(latestProvider().roomName).toBe("room-10");
+    expect(latestProvider().opts.password).toBe(deriveRoomPassword("room-10"));
+    joined.manager.destroy();
+
+    const { manager } = makeManager();
+    const roomId = await manager.startCollaboration();
+    expect(latestProvider().opts.password).toBe(deriveRoomPassword(roomId));
+    expect(latestProvider().opts.password).not.toBe(roomId);
+    manager.destroy();
+  });
+});
+
+describe("ICE servers (STUN / TURN)", () => {
+  const store = new Map<string, string>();
+  const TURN = { url: "turn:turn.example.com:3478", username: "alice", credential: "s3cret" };
+  beforeEach(() => {
+    store.clear();
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k),
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("defaults to Google STUN only", () => {
+    const servers = buildIceServers();
+    expect(servers).toEqual([{ urls: DEFAULT_STUN_SERVERS }]);
+    expect(DEFAULT_STUN_SERVERS.every((u) => u.startsWith("stun:stun") && u.includes("google"))).toBe(true);
+    expect(hasTurnServer(servers)).toBe(false);
+    expect(buildIceServers({ turn: null })).toEqual(servers);
+  });
+
+  it("appends the TURN relay with its credentials after STUN", () => {
+    const servers = buildIceServers({ turn: TURN });
+    expect(servers).toEqual([
+      { urls: DEFAULT_STUN_SERVERS },
+      { urls: "turn:turn.example.com:3478", username: "alice", credential: "s3cret" },
+    ]);
+    expect(hasTurnServer(servers)).toBe(true);
+
+    const multi = buildIceServers({
+      stun: ["stun:custom.example.com:3478"],
+      turn: { ...TURN, url: "turn:a.example.com:3478?transport=udp, turns:a.example.com:5349" },
+    });
+    expect(multi).toEqual([
+      { urls: ["stun:custom.example.com:3478"] },
+      {
+        urls: ["turn:a.example.com:3478?transport=udp", "turns:a.example.com:5349"],
+        username: "alice",
+        credential: "s3cret",
+      },
+    ]);
+  });
+
+  it("validates TURN entries: only turn:/turns: URLs are accepted", () => {
+    expect(parseTurnConfig(null)).toBeNull();
+    expect(parseTurnConfig("turn:x")).toBeNull();
+    expect(parseTurnConfig({})).toBeNull();
+    expect(parseTurnConfig({ url: "" })).toBeNull();
+    expect(parseTurnConfig({ url: "stun:stun.l.google.com:19302" })).toBeNull();
+    expect(parseTurnConfig({ url: "https://turn.example.com" })).toBeNull();
+    expect(parseTurnConfig({ url: " TURNS:relay.example.com:5349 ", username: " bob ", credential: "pw" })).toEqual({
+      url: "TURNS:relay.example.com:5349",
+      username: "bob",
+      credential: "pw",
+    });
+    expect(parseTurnConfig({ url: "turn:a:3478, junk, turns:b:5349" })).toEqual({
+      url: "turn:a:3478,turns:b:5349",
+      username: "",
+      credential: "",
+    });
+    expect(parseTurnUrls("turn:a, nope ,turns:b")).toEqual(["turn:a", "turns:b"]);
+    expect(buildIceServers({ turn: { url: "garbage", username: "u", credential: "c" } })).toEqual([
+      { urls: DEFAULT_STUN_SERVERS },
+    ]);
+  });
+
+  it("prefers the TURN relay configured in the UI over the build-time one", () => {
+    expect(getIceServers()).toEqual([{ urls: DEFAULT_STUN_SERVERS }]);
+
+    vi.stubEnv("VITE_TURN_URL", "turns:env.example.com:5349");
+    vi.stubEnv("VITE_TURN_USERNAME", "env-user");
+    vi.stubEnv("VITE_TURN_CREDENTIAL", "env-pass");
+    expect(getIceServers()[1]).toEqual({ urls: "turns:env.example.com:5349", username: "env-user", credential: "env-pass" });
+
+    localStorage.setItem(TURN_OVERRIDE_KEY, JSON.stringify(TURN));
+    expect(getIceServers()).toEqual([
+      { urls: DEFAULT_STUN_SERVERS },
+      { urls: TURN.url, username: "alice", credential: "s3cret" },
+    ]);
+
+    localStorage.setItem(TURN_OVERRIDE_KEY, "{not json");
+    expect(getIceServers()[1]?.urls).toBe("turns:env.example.com:5349"); // corrupt entry ignored → env
+    localStorage.setItem(TURN_OVERRIDE_KEY, JSON.stringify({ url: "stun:only" }));
+    expect(getIceServers()[1]?.urls).toBe("turns:env.example.com:5349"); // invalid entry ignored → env
+  });
+
+  it("hands the ICE configuration to the WebrtcProvider and reports TURN in the diagnostics", async () => {
+    const plain = makeManager({ isCollab: true, roomId: "room-11" });
+    await tick();
+    expect(latestProvider().opts.peerOpts).toEqual({ config: { iceServers: [{ urls: DEFAULT_STUN_SERVERS }] } });
+    expect(plain.manager.diagnostics.turnConfigured).toBe(false);
+    plain.manager.destroy();
+
+    localStorage.setItem(TURN_OVERRIDE_KEY, JSON.stringify(TURN));
+    const relayed = makeManager({ isCollab: true, roomId: "room-12" });
+    await tick();
+    expect(latestProvider().opts.peerOpts?.config?.iceServers).toEqual([
+      { urls: DEFAULT_STUN_SERVERS },
+      { urls: TURN.url, username: "alice", credential: "s3cret" },
+    ]);
+    expect(relayed.manager.diagnostics.turnConfigured).toBe(true);
+    await relayed.manager.stopCollaboration();
+    expect(relayed.manager.diagnostics.turnConfigured).toBe(false);
+    relayed.manager.destroy();
+
+    const custom: RTCIceServer[] = [{ urls: "stun:custom:3478" }, { urls: "turn:custom:3478", username: "u", credential: "c" }];
+    const overridden = makeManager({
+      isCollab: true,
+      roomId: "room-13",
+      options: { signaling: [], iceServers: custom },
+    });
+    await tick();
+    expect(latestProvider().opts.peerOpts?.config?.iceServers).toBe(custom);
+    expect(overridden.manager.diagnostics.turnConfigured).toBe(true);
+    overridden.manager.destroy();
   });
 });

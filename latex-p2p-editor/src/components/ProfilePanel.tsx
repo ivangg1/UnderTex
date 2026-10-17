@@ -1,10 +1,17 @@
 // Profile panel: identity (name, cursor color), language, custom signaling
-// server and the extra-window helper.
+// server, optional TURN relay and the extra-window helper.
 
 import { useEffect, useState } from "react";
 import { Check, PlusSquare } from "lucide-react";
 import { LOCALES, useI18n } from "../i18n";
-import { SIGNALING_OVERRIDE_KEY, type CollabUser } from "../services/collabManager";
+import {
+  SIGNALING_OVERRIDE_KEY,
+  TURN_OVERRIDE_KEY,
+  parseTurnConfig,
+  readTurnOverride,
+  type CollabUser,
+  type TurnConfig,
+} from "../services/collabManager";
 
 export const PRESET_COLORS = [
   "#ff6188", // red
@@ -37,6 +44,9 @@ export default function ProfilePanel({ currentUser, onUserChange, onNewWindow }:
       return "";
     }
   });
+  const [turn, setTurn] = useState<TurnConfig>(
+    () => readTurnOverride() ?? { url: "", username: "", credential: "" }
+  );
 
   useEffect(() => setName(currentUser.name), [currentUser.name]);
 
@@ -55,6 +65,18 @@ export default function ProfilePanel({ currentUser, onUserChange, onNewWindow }:
       // ignore
     }
   };
+
+  /** Persists the TURN entry when it has a valid turn:/turns: URL, clears it otherwise. */
+  const commitTurn = () => {
+    try {
+      const parsed = parseTurnConfig(turn);
+      if (parsed) localStorage.setItem(TURN_OVERRIDE_KEY, JSON.stringify(parsed));
+      else localStorage.removeItem(TURN_OVERRIDE_KEY);
+    } catch {
+      // ignore
+    }
+  };
+  const turnInvalid = turn.url.trim() !== "" && parseTurnConfig(turn) === null;
 
   return (
     <div className="flex flex-col">
@@ -117,6 +139,46 @@ export default function ProfilePanel({ currentUser, onUserChange, onNewWindow }:
           placeholder="wss://my-server:4444"
         />
         <p className="text-[10px] text-mk-fg4">{t("profile.signaling.help")}</p>
+      </div>
+
+      <div className={SECTION}>
+        <span className={LABEL}>{t("profile.turn")}</span>
+        <input
+          type="text"
+          value={turn.url}
+          onChange={(e) => setTurn({ ...turn, url: e.target.value })}
+          onBlur={commitTurn}
+          spellCheck={false}
+          className={`${INPUT} font-mono text-[11px] ${turnInvalid ? "border-mk-red" : ""}`}
+          placeholder="turn:turn.example.com:3478"
+          aria-label={t("profile.turn.url")}
+        />
+        <div className="flex gap-1.5">
+          <input
+            type="text"
+            value={turn.username}
+            onChange={(e) => setTurn({ ...turn, username: e.target.value })}
+            onBlur={commitTurn}
+            spellCheck={false}
+            autoComplete="off"
+            className={`${INPUT} font-mono text-[11px]`}
+            placeholder={t("profile.turn.username")}
+            aria-label={t("profile.turn.username")}
+          />
+          <input
+            type="password"
+            value={turn.credential}
+            onChange={(e) => setTurn({ ...turn, credential: e.target.value })}
+            onBlur={commitTurn}
+            autoComplete="new-password"
+            className={`${INPUT} font-mono text-[11px]`}
+            placeholder={t("profile.turn.credential")}
+            aria-label={t("profile.turn.credential")}
+          />
+        </div>
+        <p className={`text-[10px] ${turnInvalid ? "text-mk-red" : "text-mk-fg4"}`}>
+          {turnInvalid ? t("profile.turn.invalid") : t("profile.turn.help")}
+        </p>
       </div>
 
       <div className="px-4 py-3">

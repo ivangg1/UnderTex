@@ -11,8 +11,16 @@ npm run build          # tsc + vite build
 (cd src-tauri && cargo test)
 ```
 
-Optional environment variables (`.env`):
+Variables de entorno opcionales (`.env`, ver `.env.example`; todas se pueden
+fijar también en *Perfil* dentro de la app, que tiene prioridad):
 
 ```env
-VITE_SIGNALING_SERVER=wss://your-signaling-server
+# Servidor de señalización propio (ver ../signaling-server y ../render.yaml).
+# Se prueba antes que los públicos de y-webrtc, que quedan como fallback.
+VITE_SIGNALING_SERVER=wss://tu-servidor-de-senalizacion
+
+# Relay TURN, solo necesario para peers detrás de NAT simétricos.
+VITE_TURN_URL=turn:turn.example.com:3478
+VITE_TURN_USERNAME=user
+VITE_TURN_CREDENTIAL=secret
 ```

@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Local env (may hold TURN credentials); keep only the example
+.env
+.env.*
+!.env.example

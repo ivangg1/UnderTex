@@ -1,0 +1,27 @@
+# Fly.io config for the y-webrtc signaling server.
+# `fly launch` (from this folder) picks up this file and only asks for the app
+# name and region; `fly deploy` afterwards. The server listens on $PORT.
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "4444"
+
+[http_service]
+  internal_port = 4444
+  force_https = true
+  auto_stop_machines = "stop"   # scale to zero when idle (free tier friendly)
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[http_service.checks]]
+  method = "GET"
+  path = "/"
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "10s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
