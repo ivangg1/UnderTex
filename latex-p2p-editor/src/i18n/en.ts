@@ -177,6 +177,31 @@ export const en = {
   "topbar.autoOn": "auto",
   "topbar.manual": "manual",
 
+  // ─── Build mode (large documents) ───────────────────────────────
+  "build.scope.tip":
+    "What to typeset. “Active chapter” builds only one \\include'd chapter (the one at the cursor, or the one you pick); the other chapters keep their numbering from the last full build. Export always builds the whole document.",
+  "build.scope.full": "Full document",
+  "build.scope.cursor": "Active chapter (cursor)",
+  "build.scope.chapter": "Chapter: {name}",
+  "build.draft": "Draft",
+  "build.draft.on": "Draft mode is on: \\documentclass[draft] in the build copy (figures as frames, overfull boxes marked, faster). Export ignores it. Click to turn off.",
+  "build.draft.off": "Draft mode is off. Click to add [draft] to the build (not to your file, never to Export).",
+  "build.preamble": "Preamble",
+  "build.preamble.on":
+    "Precompiled preamble is on: pdflatex dumps the preamble to a .fmt once and reuses it while the preamble is unchanged. Falls back to a normal build on any problem. Click to turn off.",
+  "build.preamble.off": "Precompiled preamble is off. Click to let pdflatex reuse a precompiled preamble (.fmt) between builds.",
+  "build.badge.chapter": "chapter",
+  "build.badge.draft": "draft",
+  "build.badge.preamble.reused": "preamble reused",
+  "build.badge.preamble.created": "preamble dumped",
+  "build.badge.preamble.failed": "preamble fallback",
+  "build.badge.tip": "Last build: {mode}. Export always runs a full, non-draft build.",
+  "build.exporting": "Running a full build for export…",
+  "build.summary.full": "full document",
+  "build.summary.chapter": "chapter {name}",
+  "rail.build.mode": "Build: {mode} (⌘S / Ctrl+S)",
+  "rail.build.draftSuffix": ", draft",
+
   // ─── New project ────────────────────────────────────────────────
   "rail.new": "New",
   "new.title": "New project",
@@ -192,7 +217,7 @@ export const en = {
   "template.article": "Article",
   "template.article.desc": "Sections, equations, figures and a BibTeX bibliography.",
   "template.report": "Report / thesis",
-  "template.report.desc": "Chapters in separate files with \\input, table of contents, bibliography.",
+  "template.report.desc": "Chapters in separate files with \\include (buildable one at a time), table of contents, bibliography.",
   "template.beamer": "Presentation (beamer)",
   "template.beamer.desc": "Slides with the metropolis theme.",
   "error.createProject": "Could not create the project: {message}",

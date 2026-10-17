@@ -32,6 +32,8 @@ interface SidebarProps {
   connectionStatus: ConnectionStatus;
   isCompiling: boolean;
   autoCompile: boolean;
+  /** Tooltip text for the Build button (reflects the current build mode). */
+  buildTitle: string;
   canExport: boolean;
   currentUser: CollabUser;
   activePanel: PanelId | null;
@@ -83,6 +85,7 @@ export default function Sidebar({
   connectionStatus,
   isCompiling,
   autoCompile,
+  buildTitle,
   canExport,
   currentUser,
   activePanel,
@@ -162,7 +165,7 @@ export default function Sidebar({
         <RailButton
           icon={isCompiling ? <Loader2 size={20} className="animate-spin" /> : <Play size={20} strokeWidth={1.75} />}
           label={t("rail.build")}
-          title={t("toolbar.compile.tip")}
+          title={buildTitle}
           onClick={onCompile}
           disabled={!hasProject || isCompiling}
           accent="text-mk-green"

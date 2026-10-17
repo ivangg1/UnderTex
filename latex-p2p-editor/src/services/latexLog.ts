@@ -26,7 +26,18 @@ const LINE_HINT_RE = /^l\.(\d+)\b/;
 const LATEX_WARNING_RE = /^(?:LaTeX|Package \w+|Class \w+)\s+Warning:\s*(.+)$/;
 const INPUT_LINE_RE = /on input line (\d+)/;
 // Lines that are noise rather than diagnostics.
-const IGNORED_PREFIXES = ["note:", "Compiler:", "Status:", "Build cache:", "Assets:", "Passes:", "Duration:"];
+const IGNORED_PREFIXES = [
+  "note:",
+  "Compiler:",
+  "Status:",
+  "Build cache:",
+  "Assets:",
+  "Mode:",
+  "Draft:",
+  "Preamble:",
+  "Passes:",
+  "Duration:",
+];
 
 function normalizeFile(file: string): string {
   return file.replace(/^\.\//, "");

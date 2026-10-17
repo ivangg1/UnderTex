@@ -31,9 +31,23 @@ import {
   historySave,
   historyRead,
   historyDelete,
+  type BuildOptions,
+  type CompileOutput,
   type CompilerInfo,
   type SnapshotMeta,
 } from "./services/tauriBridge";
+import { findIncludes } from "./services/chapters";
+import {
+  DEFAULT_BUILD_SETTINGS,
+  PLAIN_BUILD,
+  buildKey,
+  effectiveScope,
+  isExportable,
+  resolveBuildOptions,
+  scopeChapter,
+  type BuildScope,
+  type BuildSettings,
+} from "./services/buildMode";
 import {
   CollabManager,
   type CollabUser,
@@ -51,6 +65,8 @@ import type * as Y from "yjs";
 import type { Awareness } from "y-protocols/awareness";
 
 const AUTO_COMPILE_KEY = "latex_auto_compile";
+const BUILD_DRAFT_KEY = "latex_build_draft";
+const BUILD_PREAMBLE_KEY = "latex_build_preamble";
 const AUTO_COMPILE_DEBOUNCE_MS = 2500;
 const AUTO_SNAPSHOT_INTERVAL_MS = 2 * 60 * 1000;
 const UI_ZOOM_KEY = "latex_ui_zoom";
@@ -82,6 +98,23 @@ function readZoom(): number {
   return 1;
 }
 
+function readFlag(key: string, fallback: boolean): boolean {
+  try {
+    const v = localStorage.getItem(key);
+    return v === null ? fallback : v === "1";
+  } catch {
+    return fallback;
+  }
+}
+
+function writeFlag(key: string, value: boolean): void {
+  try {
+    localStorage.setItem(key, value ? "1" : "0");
+  } catch {
+    // ignore
+  }
+}
+
 function errorMessage(err: unknown): string {
   return typeof err === "string" ? err : err instanceof Error ? err.message : String(err);
 }
@@ -103,6 +136,8 @@ interface CompileState {
   pdfData: Uint8Array | null;
   pdfVersion: number;
   pdfPath: string | null;
+  /** `true` when the PDF at `pdfPath` comes from a full, non-draft build (exportable as is). */
+  pdfPlain: boolean;
   logs: string | null;
   diagnostics: LatexDiagnostic[];
   summary: CompileSummary | null;
@@ -113,11 +148,21 @@ const EMPTY_COMPILE: CompileState = {
   pdfData: null,
   pdfVersion: 0,
   pdfPath: null,
+  pdfPlain: false,
   logs: null,
   diagnostics: [],
   summary: null,
   fatalError: null,
 };
+
+interface CompileRequest {
+  /** Automatic (debounced) build: quiet, and skipped when nothing changed. */
+  auto?: boolean;
+  /** Ignore the build mode: full document, no draft, no format (Export). */
+  plain?: boolean;
+  /** Settings to use instead of the current ones (right after a toggle). */
+  settings?: BuildSettings;
+}
 
 const IDLE_SAVE: SaveState = { status: "idle", lastSavedAt: null, error: null };
 
@@ -160,6 +205,15 @@ function App() {
       return true;
     }
   });
+  // Build mode for large documents: scope is per project (reset on open), the
+  // draft and precompiled-preamble switches are remembered.
+  const [buildSettings, setBuildSettings] = useState<BuildSettings>(() => ({
+    ...DEFAULT_BUILD_SETTINGS,
+    draft: readFlag(BUILD_DRAFT_KEY, false),
+    precompiledPreamble: readFlag(BUILD_PREAMBLE_KEY, false),
+  }));
+  /** Chapters the root file currently `\include`s (drives the scope control). */
+  const [chapters, setChapters] = useState<string[]>([]);
 
   // ─── History ────────────────────────────────────────────────────
   const [snapshots, setSnapshots] = useState<SnapshotMeta[]>([]);
@@ -174,7 +228,11 @@ function App() {
   const editorRef = useRef<LatexEditorHandle | null>(null);
   const compilingRef = useRef(false);
   const compileQueuedRef = useRef<null | { auto: boolean }>(null);
-  const lastCompiledRef = useRef<{ text: string; success: boolean } | null>(null);
+  const lastCompiledRef = useRef<{ key: string; success: boolean } | null>(null);
+  const buildSettingsRef = useRef(buildSettings);
+  buildSettingsRef.current = buildSettings;
+  const autoCompileRef = useRef(autoCompile);
+  autoCompileRef.current = autoCompile;
   const autoCompileTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastAutoSnapshotRef = useRef(0);
   const currentUserRef = useRef(currentUser);
@@ -196,66 +254,118 @@ function App() {
   }, []);
 
   // ─── Compile ────────────────────────────────────────────────────
-  const runCompile = useCallback(
-    async (opts: { auto?: boolean } = {}) => {
-      const manager = managerRef.current;
-      const current = projectRef.current;
-      if (!manager || !current) return;
-      const auto = opts.auto ?? false;
-      if (compilingRef.current) {
-        compileQueuedRef.current = { auto: auto && (compileQueuedRef.current?.auto ?? true) };
-        return;
-      }
-      const text = manager.getText();
-      // Automatic builds skip unchanged content; a manual build always runs.
-      if (auto && lastCompiledRef.current && lastCompiledRef.current.text === text && lastCompiledRef.current.success) {
-        return;
-      }
-      compilingRef.current = true;
-      setIsCompiling(true);
-      setCompileQuiet(auto);
-      try {
-        await manager.flushSave();
-        const result = await compileLatex(current.path, current.mainFile, text);
-        const parsed = parseLatexLog(result.logs);
-        let pdfData: Uint8Array | null = null;
-        if (result.pdf_path) {
-          try {
-            pdfData = await readBuildFile(result.pdf_path);
-          } catch (err) {
-            console.error("Failed to read compiled PDF:", err);
-          }
-        }
-        lastCompiledRef.current = { text, success: result.success };
-        setCompile((prev) => ({
-          pdfData: pdfData ?? prev.pdfData, // keep the last good PDF visible on failure
-          pdfVersion: pdfData ? prev.pdfVersion + 1 : prev.pdfVersion,
-          pdfPath: result.pdf_path ?? prev.pdfPath,
-          logs: result.logs,
-          diagnostics: parsed,
-          summary: {
-            success: result.success,
-            compiler: result.compiler,
-            durationMs: result.duration_ms,
-            timedOut: result.timed_out,
-          },
-          fatalError: null,
-        }));
-      } catch (err: unknown) {
-        const message = errorMessage(err);
-        console.error("Compilation error:", err);
-        setCompile((prev) => ({ ...prev, logs: message, diagnostics: [], summary: null, fatalError: message }));
-      } finally {
-        compilingRef.current = false;
-        setIsCompiling(false);
-        const queued = compileQueuedRef.current;
-        if (queued) {
-          compileQueuedRef.current = null;
-          setTimeout(() => void runCompile(queued), 0);
+  /** Runs one build; resolves to the backend result, or `null` when skipped/queued/failed. */
+  const runCompile = useCallback(async (opts: CompileRequest = {}): Promise<CompileOutput | null> => {
+    const manager = managerRef.current;
+    const current = projectRef.current;
+    if (!manager || !current) return null;
+    const auto = opts.auto ?? false;
+    if (compilingRef.current) {
+      compileQueuedRef.current = { auto: auto && (compileQueuedRef.current?.auto ?? true) };
+      return null;
+    }
+    const text = manager.getText();
+    // The build mode only touches the build copy of the root file; Export asks for a plain build.
+    const options: BuildOptions = opts.plain
+      ? PLAIN_BUILD
+      : resolveBuildOptions(
+          opts.settings ?? buildSettingsRef.current,
+          findIncludes(text).map((c) => c.name),
+          editorRef.current?.getActiveChapter() ?? null
+        );
+    const key = buildKey(text, options);
+    // Automatic builds skip unchanged input (text + mode); a manual build always runs.
+    if (auto && lastCompiledRef.current && lastCompiledRef.current.key === key && lastCompiledRef.current.success) {
+      return null;
+    }
+    compilingRef.current = true;
+    setIsCompiling(true);
+    setCompileQuiet(auto);
+    try {
+      await manager.flushSave();
+      const result = await compileLatex(current.path, current.mainFile, text, options);
+      const parsed = parseLatexLog(result.logs);
+      let pdfData: Uint8Array | null = null;
+      if (result.pdf_path) {
+        try {
+          pdfData = await readBuildFile(result.pdf_path);
+        } catch (err) {
+          console.error("Failed to read compiled PDF:", err);
         }
       }
+      lastCompiledRef.current = { key, success: result.success };
+      setCompile((prev) => ({
+        pdfData: pdfData ?? prev.pdfData, // keep the last good PDF visible on failure
+        pdfVersion: pdfData ? prev.pdfVersion + 1 : prev.pdfVersion,
+        pdfPath: result.pdf_path ?? prev.pdfPath,
+        pdfPlain: result.pdf_path ? isExportable(result) : prev.pdfPlain,
+        logs: result.logs,
+        diagnostics: parsed,
+        summary: {
+          success: result.success,
+          compiler: result.compiler,
+          durationMs: result.duration_ms,
+          timedOut: result.timed_out,
+          mode: result.mode,
+          chapter: result.chapter,
+          draft: result.draft,
+          preamble: result.preamble,
+        },
+        fatalError: null,
+      }));
+      return result;
+    } catch (err: unknown) {
+      const message = errorMessage(err);
+      console.error("Compilation error:", err);
+      setCompile((prev) => ({ ...prev, logs: message, diagnostics: [], summary: null, fatalError: message }));
+      return null;
+    } finally {
+      compilingRef.current = false;
+      setIsCompiling(false);
+      const queued = compileQueuedRef.current;
+      if (queued) {
+        compileQueuedRef.current = null;
+        setTimeout(() => void runCompile(queued), 0);
+      }
+    }
+  }, []);
+
+  // Chapters (`\include`) of the root file, kept current for the scope control.
+  useEffect(() => {
+    const manager = managerRef.current;
+    if (!manager || !session) {
+      setChapters([]);
+      return;
+    }
+    const update = () => {
+      const names = Array.from(new Set(findIncludes(manager.getText()).map((c) => c.name)));
+      setChapters((prev) => (prev.length === names.length && prev.every((n, i) => n === names[i]) ? prev : names));
+    };
+    update();
+    manager.doc.on("update", update);
+    return () => manager.doc.off("update", update);
+  }, [session]);
+
+  /** Applies a build-mode change and, with auto build on, rebuilds right away. */
+  const updateBuildSettings = useCallback(
+    (patch: Partial<BuildSettings>) => {
+      const next = { ...buildSettingsRef.current, ...patch };
+      buildSettingsRef.current = next;
+      setBuildSettings(next);
+      writeFlag(BUILD_DRAFT_KEY, next.draft);
+      writeFlag(BUILD_PREAMBLE_KEY, next.precompiledPreamble);
+      if (autoCompileRef.current && projectRef.current) void runCompile({ auto: true, settings: next });
     },
-    []
+    [runCompile]
+  );
+  const handleChangeScope = useCallback((scope: BuildScope) => updateBuildSettings({ scope }), [updateBuildSettings]);
+  const handleToggleDraft = useCallback(
+    () => updateBuildSettings({ draft: !buildSettingsRef.current.draft }),
+    [updateBuildSettings]
+  );
+  const handleTogglePreamble = useCallback(
+    () => updateBuildSettings({ precompiledPreamble: !buildSettingsRef.current.precompiledPreamble }),
+    [updateBuildSettings]
   );
 
   // Auto-compile: debounce document updates.
@@ -438,6 +548,9 @@ function App() {
       setSaveState(manager.saveState);
       setCompile(EMPTY_COMPILE);
       lastCompiledRef.current = null;
+      // Chapter names belong to a project: back to the full document.
+      buildSettingsRef.current = { ...buildSettingsRef.current, scope: "full" };
+      setBuildSettings(buildSettingsRef.current);
       setPageCount(null);
       setBanner(null);
       setSelectedSnapshot(null);
@@ -607,16 +720,26 @@ function App() {
     }
   }, []);
 
+  // Export always ships the whole document without draft: when the PDF on screen
+  // came from a chapter or draft build, a plain full build runs first.
   const handleExport = useCallback(async () => {
-    if (!compile.pdfPath || !project) return;
+    if (!compile.pdfPath || !project || compilingRef.current) return;
     try {
+      let pdfPath = compile.pdfPath;
+      if (!compile.pdfPlain) {
+        setBanner({ kind: "info", text: t("build.exporting") });
+        const result = await runCompile({ plain: true });
+        setBanner(null);
+        if (!result?.pdf_path) return; // errors are shown in the preview
+        pdfPath = result.pdf_path;
+      }
       const stem = project.mainFile.split("/").pop()?.replace(/\.tex$/i, "") ?? "main";
-      await exportPdf(compile.pdfPath, `${stem}.pdf`);
+      await exportPdf(pdfPath, `${stem}.pdf`);
     } catch (err) {
       console.error("Failed to export PDF:", err);
       setBanner({ kind: "error", text: t("error.export", { message: errorMessage(err) }) });
     }
-  }, [compile.pdfPath, project, t]);
+  }, [compile.pdfPath, compile.pdfPlain, project, runCompile, t]);
 
   const handleJumpToLine = useCallback((line: number) => {
     editorRef.current?.goToLine(line);
@@ -703,6 +826,17 @@ function App() {
   }
   const effectivePanel: PanelId | null = panelContent ? activePanel : null;
 
+  // Build button tooltip reflects the mode that ⌘S / Build will use.
+  const scopeNow = effectiveScope(buildSettings.scope, chapters);
+  const scopeLabel =
+    scopeNow === "full"
+      ? t("build.summary.full")
+      : scopeNow === "cursor"
+        ? t("build.scope.cursor")
+        : t("build.summary.chapter", { name: scopeChapter(scopeNow) ?? "" });
+  const buildTitle = t("rail.build.mode", { mode: `${scopeLabel}${buildSettings.draft ? t("rail.build.draftSuffix") : ""}` });
+  const canExport = Boolean(compile.pdfPath) && !isCompiling;
+
   // ─── Render ─────────────────────────────────────────────────────
   const zoomed = Math.abs(uiZoom - 1) > 0.001;
   return (
@@ -722,7 +856,8 @@ function App() {
         connectionStatus={connectionStatus}
         isCompiling={isCompiling}
         autoCompile={autoCompile}
-        canExport={Boolean(compile.pdfPath)}
+        buildTitle={buildTitle}
+        canExport={canExport}
         currentUser={currentUser}
         activePanel={effectivePanel}
         onOpenFolder={handleOpenFolder}
@@ -752,6 +887,11 @@ function App() {
           pageCount={pageCount}
           autoCompile={autoCompile}
           isCompiling={isCompiling}
+          chapters={chapters}
+          buildSettings={buildSettings}
+          onChangeScope={handleChangeScope}
+          onToggleDraft={handleToggleDraft}
+          onTogglePreamble={handleTogglePreamble}
           uiZoom={uiZoom}
           onResetZoom={() => setZoom(() => 1)}
           onSelectMainFile={handleSelectMainFile}
@@ -792,7 +932,7 @@ function App() {
                   fatalError={compile.fatalError}
                   isCompiling={isCompiling}
                   quietCompile={compileQuiet}
-                  canExport={Boolean(compile.pdfPath)}
+                  canExport={canExport}
                   mainFile={project?.mainFile ?? null}
                   onJumpToLine={handleJumpToLine}
                   onExport={handleExport}

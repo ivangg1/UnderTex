@@ -25,6 +25,7 @@ import {
   ZoomOut,
 } from "lucide-react";
 import type { LatexDiagnostic } from "../services/latexLog";
+import type { PreambleStatus } from "../services/tauriBridge";
 import { useI18n } from "../i18n";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -34,6 +35,11 @@ export interface CompileSummary {
   compiler: string;
   durationMs: number;
   timedOut: boolean;
+  /** What the last build typeset (see `BuildOptions` in tauriBridge). */
+  mode: "full" | "chapter";
+  chapter: string | null;
+  draft: boolean;
+  preamble: PreambleStatus;
 }
 
 interface PdfPreviewProps {
@@ -288,8 +294,14 @@ export default function PdfPreview({
         {doc && <span className="ml-2 text-mk-fg4">{doc.numPages === 1 ? t("preview.page") : t("preview.pages", { count: doc.numPages })}</span>}
         <div className="flex-1" />
         {summary && !isCompiling && (
-          <span className="text-mk-fg4">
+          <span className="text-mk-fg4 flex items-center gap-1.5">
             {t("preview.compiledWith", { compiler: summary.compiler, seconds: (summary.durationMs / 1000).toFixed(1) })}
+            {summary.mode === "chapter" && (
+              <span className="px-1 border border-mk-blue/50 text-mk-blue" title={summary.chapter ?? undefined}>
+                {t("build.badge.chapter")}
+              </span>
+            )}
+            {summary.draft && <span className="px-1 border border-mk-orange/50 text-mk-orange">{t("build.badge.draft")}</span>}
           </span>
         )}
         <button

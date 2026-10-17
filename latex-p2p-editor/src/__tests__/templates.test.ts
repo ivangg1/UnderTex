@@ -20,11 +20,11 @@ describe("project templates", () => {
     }
   });
 
-  it("every \\input in a template points to a file the template ships", () => {
+  it("every \\input / \\include in a template points to a file the template ships", () => {
     for (const template of TEMPLATES) {
       const paths = new Set(template.files.map((f) => f.path));
       for (const file of template.files) {
-        for (const m of file.content.matchAll(/\\input\{([^}]+)\}/g)) {
+        for (const m of file.content.matchAll(/\\(?:input|include)\{([^}]+)\}/g)) {
           const target = m[1].endsWith(".tex") ? m[1] : `${m[1]}.tex`;
           expect(paths.has(target), `${template.id}: missing ${target}`).toBe(true);
         }
@@ -34,6 +34,8 @@ describe("project templates", () => {
       }
     }
     expect(findTemplate("article")?.files.some((f) => f.path === "refs.bib")).toBe(true);
+    // The report template uses \include so chapters can be built one at a time.
+    expect(findTemplate("report")?.files[0].content).toMatch(/\\include\{chapters\/introduction\}/);
     expect(findTemplate("nope")).toBeUndefined();
   });
 });

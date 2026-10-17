@@ -1,10 +1,28 @@
 // Top status bar: project breadcrumb + root file, and live status on the right
 // (mode, connection, save state, compiler, last build).
 
-import { AlertTriangle, Check, ChevronRight, Cloud, Crown, FolderOpen, Laptop, Loader2, Save, User, Users, Zap, ZapOff } from "lucide-react";
+import {
+  AlertTriangle,
+  BookOpen,
+  Check,
+  ChevronRight,
+  Cloud,
+  Crown,
+  Feather,
+  FolderOpen,
+  Laptop,
+  Layers,
+  Loader2,
+  Save,
+  User,
+  Users,
+  Zap,
+  ZapOff,
+} from "lucide-react";
 import { useI18n } from "../i18n";
 import type { CollabMode, ConnectionStatus, PeerInfo, SaveState } from "../services/collabManager";
 import type { CompilerInfo } from "../services/tauriBridge";
+import { chapterScope, scopeChapter, type BuildScope, type BuildSettings } from "../services/buildMode";
 import type { CompileSummary } from "./PdfPreview";
 import { connectionLabel } from "./ConnectionBadge";
 import { folderName } from "../services/recents";
@@ -24,6 +42,12 @@ interface TopBarProps {
   pageCount: number | null;
   autoCompile: boolean;
   isCompiling: boolean;
+  /** Chapters the root file `\include`s (the scope control is hidden without them). */
+  chapters: string[];
+  buildSettings: BuildSettings;
+  onChangeScope: (scope: BuildScope) => void;
+  onToggleDraft: () => void;
+  onTogglePreamble: () => void;
   uiZoom: number;
   onResetZoom: () => void;
   onSelectMainFile: (file: string) => void;
@@ -50,6 +74,11 @@ export default function TopBar({
   pageCount,
   autoCompile,
   isCompiling,
+  chapters,
+  buildSettings,
+  onChangeScope,
+  onToggleDraft,
+  onTogglePreamble,
   uiZoom,
   onResetZoom,
   onSelectMainFile,
@@ -57,6 +86,22 @@ export default function TopBar({
   const { t } = useI18n();
   const conn = connectionLabel(connectionStatus, t);
   const compilerMissing = compilerInfo !== null && compilerInfo.name === null;
+  const scopeActive = chapters.length > 0 && buildSettings.scope !== "full";
+  // A picked chapter that vanished from the root file shows as "full" in the control.
+  const picked = scopeChapter(buildSettings.scope);
+  const scopeValue: BuildScope = picked !== null && !chapters.includes(picked) ? "full" : buildSettings.scope;
+
+  let lastBuildBadge: string | null = null;
+  if (summary) {
+    const parts: string[] = [];
+    if (summary.mode === "chapter") parts.push(t("build.summary.chapter", { name: summary.chapter ?? "?" }));
+    else parts.push(t("build.summary.full"));
+    if (summary.draft) parts.push(t("build.badge.draft"));
+    if (summary.preamble === "reused" || summary.preamble === "created" || summary.preamble === "failed") {
+      parts.push(t(`build.badge.preamble.${summary.preamble}`));
+    }
+    lastBuildBadge = parts.join(" · ");
+  }
 
   let save: { icon: React.ReactNode; text: string; cls: string; tip?: string } | null = null;
   switch (saveState.status) {
@@ -146,7 +191,54 @@ export default function TopBar({
         </span>
       )}
 
-      {/* Compiler + build mode */}
+      {/* Build scope: only for documents split with \include */}
+      {projectPath && chapters.length > 0 && (
+        <span className={`${ITEM} ${scopeActive ? "text-mk-blue" : ""}`} title={t("build.scope.tip")}>
+          <BookOpen size={12} className="shrink-0" />
+          <select
+            value={scopeValue}
+            onChange={(e) => onChangeScope(e.target.value as BuildScope)}
+            disabled={isCompiling}
+            className="bg-transparent text-[11px] focus:outline-none cursor-pointer disabled:cursor-not-allowed max-w-48 truncate"
+          >
+            <option value="full">{t("build.scope.full")}</option>
+            <option value="cursor">{t("build.scope.cursor")}</option>
+            {chapters.map((c) => (
+              <option key={c} value={chapterScope(c)}>
+                {t("build.scope.chapter", { name: c })}
+              </option>
+            ))}
+          </select>
+        </span>
+      )}
+
+      {/* Draft mode */}
+      {projectPath && (
+        <button
+          onClick={onToggleDraft}
+          className={`${ITEM} cursor-pointer hover:text-mk-fg ${buildSettings.draft ? "text-mk-orange" : ""}`}
+          title={buildSettings.draft ? t("build.draft.on") : t("build.draft.off")}
+          aria-pressed={buildSettings.draft}
+        >
+          <Feather size={12} />
+          {t("build.draft")}
+        </button>
+      )}
+
+      {/* Precompiled preamble (pdflatex only) */}
+      {projectPath && compilerInfo?.name === "pdflatex" && (
+        <button
+          onClick={onTogglePreamble}
+          className={`${ITEM} cursor-pointer hover:text-mk-fg ${buildSettings.precompiledPreamble ? "text-mk-green" : ""}`}
+          title={buildSettings.precompiledPreamble ? t("build.preamble.on") : t("build.preamble.off")}
+          aria-pressed={buildSettings.precompiledPreamble}
+        >
+          <Layers size={12} />
+          {t("build.preamble")}
+        </button>
+      )}
+
+      {/* Compiler + auto/manual */}
       {compilerInfo && (
         <span
           className={`${ITEM} ${compilerMissing ? "text-mk-red" : ""}`}
@@ -176,9 +268,14 @@ export default function TopBar({
         </span>
       )}
       {summary && (
-        <span className={`${ITEM} ${summary.success ? "" : "text-mk-red"}`} title={t("topbar.lastBuild")}>
+        <span
+          className={`${ITEM} ${summary.success ? "" : "text-mk-red"}`}
+          title={lastBuildBadge ? t("build.badge.tip", { mode: lastBuildBadge }) : t("topbar.lastBuild")}
+        >
           <span className="font-mono">{(summary.durationMs / 1000).toFixed(1)}s</span>
           {pageCount !== null && <span className="text-mk-fg4">· {pageCount === 1 ? t("preview.page") : t("preview.pages", { count: pageCount })}</span>}
+          {summary.mode === "chapter" && <span className="text-mk-blue">· {t("build.badge.chapter")}</span>}
+          {summary.draft && <span className="text-mk-orange">· {t("build.badge.draft")}</span>}
         </span>
       )}
     </header>

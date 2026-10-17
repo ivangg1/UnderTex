@@ -22,6 +22,11 @@ compile limits.
   inside a per-project build cache in the OS temp directory: the project folder
   never gets `.aux`, `.log` or PDF files, and assets (figures, `.sty`, `.bib`,
   chapters) are synced incrementally.
+- **Fast builds for long documents**: an *Active chapter* scope typesets only
+  the `\include`d chapter at the cursor (numbering and references come from the
+  cached full build), a *Draft* switch adds `[draft]` to the build copy, and
+  with `pdflatex` the preamble can be precompiled into a `.fmt` and reused.
+  None of this touches your files, and *Export* always builds the whole document.
 - **Solo mode** by default: no network, no hidden files, atomic saves of your
   `.tex`.
 - **On-demand P2P collaboration** (Google-Docs style, live cursors): press
@@ -89,6 +94,12 @@ A ready-made example lives in [`examples/demo-project`](examples/demo-project)
 **History**: open the *History* rail item, type a label and save a version;
 click a version to compare it with the current document and *Restore* it.
 
+**Chapter builds**: open [`examples/book-project`](examples/book-project)
+(root `book.tex`, three `\include`d chapters). Build it once, then pick
+*Active chapter (cursor)* in the top bar and put the cursor on an `\include`
+line: only that chapter is typeset, with the right chapter and page numbers.
+*Draft* speeds things up further; *Export* still ships the whole document.
+
 ## Architecture
 
 ```
@@ -96,7 +107,7 @@ latex-p2p-editor/
 ├── src/
 │   ├── components/
 │   │   ├── Sidebar.tsx         # action rail (new, open, join, share, build, auto, export, history) + flyout panel
-│   │   ├── TopBar.tsx          # project › root file, mode, connection, save state, compiler, last build, zoom
+│   │   ├── TopBar.tsx          # project › root file, build scope / draft / preamble, mode, connection, save, compiler, last build
 │   │   ├── CollabPanel.tsx     # room: ID, invite, peers, connection diagnostics
 │   │   ├── JoinPanel.tsx       # join a room by ID
 │   │   ├── NewProjectPanel.tsx # name, template, location
@@ -112,6 +123,8 @@ latex-p2p-editor/
 │   │   ├── collabManager.ts    # Y.Doc, WebrtcProvider, awareness, host election, persistence
 │   │   ├── crdtSeed.ts         # deterministic document seeding (prevents duplicated text)
 │   │   ├── latexLog.ts         # tectonic / pdflatex log parser
+│   │   ├── chapters.ts         # \include detection, chapter at the cursor
+│   │   ├── buildMode.ts        # build scope / draft / preamble → BuildOptions
 │   │   ├── textDiff.ts         # minimal-edit replacement (restore) and line diffs
 │   │   ├── templates.ts        # project templates
 │   │   ├── recents.ts          # recent projects (localStorage)
@@ -121,9 +134,10 @@ latex-p2p-editor/
 │   ├── lib.rs                  # Tauri commands, window close with flush
 │   ├── project.rs              # root .tex detection, .texcollab/, atomic saves, project scaffolding
 │   ├── history.rs              # version history store (app data dir)
-│   ├── compiler.rs             # engine discovery, build cache, timeout
+│   ├── compiler.rs             # engine discovery, build cache, timeout, chapter/draft/preamble rewrites
 │   └── fsutil.rs               # write_atomic, path validation
 ├── examples/demo-project/      # sample project
+├── examples/book-project/      # sample report with \include'd chapters (try "Active chapter")
 └── signaling-server/           # optional self-hosted y-webrtc signaling server
 ```
 
@@ -148,9 +162,34 @@ latex-p2p-editor/
 - **Compile pipeline.** Async command (never blocks the UI), per-project cache
   with a manifest (copies only what changed, removes deleted assets, keeps engine
   intermediates), timeout that kills the process group, PDF returned as binary
-  IPC bytes (not a JSON array). Automatic builds skip unchanged content; TeX
-  itself is never incremental, so large documents benefit from `\include` +
-  `\includeonly` and draft mode (see Known limitations).
+  IPC bytes (not a JSON array). Automatic builds skip unchanged input (text and
+  build mode). TeX itself is never incremental, so long documents get three
+  shortcuts that rewrite only the *build copy* of the root file, always keeping
+  its line numbers so error locations still match the editor:
+  - **Active chapter** (top bar, for roots that `\include` chapters): the
+    backend puts `\includeonly{<chapter>}` on the `\begin{document}` line of
+    the build copy, redirecting any `\includeonly` already there. The chapter
+    is the `\include` at (or nearest above) the cursor, or one picked from the
+    list. The other chapters' `.aux` files from the last full build stay in the
+    cache, so chapter numbers, page numbers and `\ref`s are right; run a full
+    build first (or after adding a chapter). Works with tectonic and pdflatex.
+  - **Draft**: `draft` is added to the `\documentclass` options (`final` is
+    turned into `draft`, since classes let `final` win). Figures become frames
+    and many packages skip expensive work.
+  - **Precompiled preamble** (`pdflatex` only, opt-in in the top bar): the
+    root is split at `\begin{document}`, the preamble is dumped once with
+    `pdflatex -ini … "&pdflatex" mylatexformat.ltx` into
+    `preamble-<hash>.fmt` in the build cache (hash of the preamble text and the
+    engine binary), and later builds load it through a `%&preamble-<hash>`
+    first line. mylatexformat skips the preamble and executes the
+    `\begin{document}` line, so the chapter directive still applies. A failed
+    dump, a stale format after a TeX upgrade or a format the distribution cannot
+    find falls back to a normal build (the log says so); tectonic cannot load
+    custom formats, so the switch is hidden there. Only the three newest
+    formats per root file are kept.
+  - **Export is always a plain full build**: no chapter filter, no draft, no
+    format. If the PDF on screen came from a chapter or draft build, Export
+    runs the full build first.
 - **Version history lives outside the project** (`<app data>/history/<project hash>/`):
   solo folders stay free of hidden files and cloud-synced folders do not get
   extra churn. Automatic snapshots are deduplicated and pruned; named versions
@@ -171,8 +210,23 @@ latex-p2p-editor/
 - **Single editable file.** The whole project is compiled (`\input`, `.bib`,
   figures) but the editor opens only the root file. The backend already handles
   arbitrary paths; multi-file editing is the next step.
-- **No incremental typesetting.** Every build re-typesets the document; auto
-  build is debounced (2.5 s) and skipped when nothing changed.
+- **No incremental typesetting.** Every build re-typesets what it is asked to;
+  auto build is debounced (2.5 s) and skipped when nothing changed. The
+  shortcuts have limits of their own:
+  - *Active chapter* needs chapters pulled in with `\include` (not `\input`)
+    and a previous full build so the other chapters' `.aux` files exist;
+    otherwise numbering starts from 1 and references show as `??` until the
+    next full build. New or renamed chapters appear after a full build. The
+    table of contents and bibliography are only complete in a full build.
+  - *Draft* changes the output (frames instead of figures, marked overfull
+    boxes); it is a review aid, not the final layout.
+  - The *precompiled preamble* is `pdflatex` only, needs `mylatexformat.ltx`
+    (TeX Live `collection-latexextra`, MiKTeX on demand) and has not been
+    exercised on MiKTeX by us. Preambles that expand `\jobname` eagerly see the
+    real job name (the dump runs with it), but packages that write files or
+    keep state at load time may misbehave inside a format: turn the switch off
+    if a build looks wrong, and compare with a plain build before reporting a
+    LaTeX problem. Formats take 10–30 MB each in the OS temp directory.
 - **Collaboration tests use a simulated `WebrtcProvider`**: they exercise the
   real manager (election, failover, seeding, saves) through the events y-webrtc
   emits, but they do not replace a test between two real machines.
@@ -181,9 +235,10 @@ latex-p2p-editor/
 
 ```bash
 cd latex-p2p-editor
-npm test                 # vitest: CRDT seeding, log parser, CollabManager, signaling, i18n, recents, templates, diffs
+npm test                 # vitest: CRDT seeding, log parser, CollabManager, signaling, i18n, recents, templates, diffs, chapters, build mode
 npm run build            # tsc + vite
 
 cd src-tauri
-cargo test               # project, history, fsutil, compiler (compile tests are skipped without an engine)
+cargo test               # project, history, fsutil, compiler: includeonly/draft/preamble rewrites, format cache,
+                         # and (with an engine installed) a real chapter-only build with cached numbering
 ```

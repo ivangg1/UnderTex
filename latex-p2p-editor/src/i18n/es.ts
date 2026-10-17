@@ -179,6 +179,31 @@ export const es: Record<keyof typeof en, string> = {
   "topbar.autoOn": "auto",
   "topbar.manual": "manual",
 
+  // ─── Modo de compilación (documentos grandes) ───────────────────
+  "build.scope.tip":
+    "Qué compilar. “Capítulo activo” compila solo un capítulo incluido con \\include (el del cursor o el que elijas); los demás conservan su numeración de la última compilación completa. Exportar siempre compila el documento entero.",
+  "build.scope.full": "Documento completo",
+  "build.scope.cursor": "Capítulo activo (cursor)",
+  "build.scope.chapter": "Capítulo: {name}",
+  "build.draft": "Borrador",
+  "build.draft.on": "Modo borrador activado: \\documentclass[draft] en la copia de compilación (figuras como marcos, cajas desbordadas marcadas, más rápido). Exportar lo ignora. Clic para desactivar.",
+  "build.draft.off": "Modo borrador desactivado. Clic para añadir [draft] a la compilación (no a tu archivo, nunca a Exportar).",
+  "build.preamble": "Preámbulo",
+  "build.preamble.on":
+    "Preámbulo precompilado activado: pdflatex vuelca el preámbulo a un .fmt una vez y lo reutiliza mientras no cambie. Ante cualquier problema vuelve a una compilación normal. Clic para desactivar.",
+  "build.preamble.off": "Preámbulo precompilado desactivado. Clic para que pdflatex reutilice un preámbulo precompilado (.fmt) entre compilaciones.",
+  "build.badge.chapter": "capítulo",
+  "build.badge.draft": "borrador",
+  "build.badge.preamble.reused": "preámbulo reutilizado",
+  "build.badge.preamble.created": "preámbulo volcado",
+  "build.badge.preamble.failed": "preámbulo: compilación normal",
+  "build.badge.tip": "Última compilación: {mode}. Exportar siempre hace una compilación completa sin borrador.",
+  "build.exporting": "Compilación completa para exportar…",
+  "build.summary.full": "documento completo",
+  "build.summary.chapter": "capítulo {name}",
+  "rail.build.mode": "Compilar: {mode} (⌘S / Ctrl+S)",
+  "rail.build.draftSuffix": ", borrador",
+
   // ─── Nuevo proyecto ─────────────────────────────────────────────
   "rail.new": "Nuevo",
   "new.title": "Nuevo proyecto",
@@ -194,7 +219,7 @@ export const es: Record<keyof typeof en, string> = {
   "template.article": "Artículo",
   "template.article.desc": "Secciones, ecuaciones, figuras y bibliografía BibTeX.",
   "template.report": "Informe / tesis",
-  "template.report.desc": "Capítulos en archivos separados con \\input, índice, bibliografía.",
+  "template.report.desc": "Capítulos en archivos separados con \\include (compilables de uno en uno), índice, bibliografía.",
   "template.beamer": "Presentación (beamer)",
   "template.beamer.desc": "Diapositivas con el tema metropolis.",
   "error.createProject": "No se pudo crear el proyecto: {message}",

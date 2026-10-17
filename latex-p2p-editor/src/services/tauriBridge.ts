@@ -33,6 +33,21 @@ export interface CompilerInfo {
   install_hint: string;
 }
 
+/**
+ * Shortcuts for large documents. They only change the build copy of the root file;
+ * the project is never modified. All off = a plain full build (what Export uses).
+ */
+export interface BuildOptions {
+  /** Typeset only this `\include`d chapter (argument exactly as in `\include{…}`). */
+  includeOnly?: string | null;
+  /** Add `draft` to the `\documentclass` options. */
+  draft?: boolean;
+  /** Reuse a precompiled preamble (`.fmt`); pdflatex only, ignored elsewhere. */
+  precompiledPreamble?: boolean;
+}
+
+export type PreambleStatus = "off" | "unsupported" | "reused" | "created" | "failed";
+
 export interface CompileOutput {
   success: boolean;
   compiler: string;
@@ -41,6 +56,11 @@ export interface CompileOutput {
   pdf_path: string | null;
   duration_ms: number;
   timed_out: boolean;
+  /** What was typeset: a requested chapter the root does not `\include` falls back to "full". */
+  mode: "full" | "chapter";
+  chapter: string | null;
+  draft: boolean;
+  preamble: PreambleStatus;
 }
 
 /** Event emitted by the backend when the OS asks to close the window. */
@@ -194,6 +214,7 @@ export async function compileLatex(
   projectPath: string,
   mainFile: string,
   texContent: string,
+  options: BuildOptions = {},
   timeoutSecs?: number
 ): Promise<CompileOutput> {
   return invoke<CompileOutput>("compile_latex", {
@@ -201,6 +222,11 @@ export async function compileLatex(
     mainFile,
     texContent,
     timeoutSecs: timeoutSecs ?? null,
+    options: {
+      includeOnly: options.includeOnly ?? null,
+      draft: options.draft ?? false,
+      precompiledPreamble: options.precompiledPreamble ?? false,
+    },
   });
 }
 

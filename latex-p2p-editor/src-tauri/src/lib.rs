@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use tauri::{Emitter, Manager, WindowEvent};
 
-use compiler::{CompileOutput, CompilerInfo};
+use compiler::{BuildOptions, CompileOutput, CompilerInfo};
 use history::{HistoryStore, SaveOutcome, SnapshotMeta};
 use project::{ProjectData, ProjectFile, RoomMeta};
 
@@ -152,17 +152,21 @@ async fn detect_compiler() -> CompilerInfo {
 }
 
 /// Compile the in-memory TeX source inside the per-project build cache. Runs on a
-/// blocking thread so the UI stays responsive during long builds.
+/// blocking thread so the UI stays responsive during long builds. `options`
+/// selects the active-chapter / draft / precompiled-preamble shortcuts (all off by
+/// default, which is also what Export uses).
 #[tauri::command]
 async fn compile_latex(
     project_path: String,
     main_file: String,
     tex_content: String,
     timeout_secs: Option<u64>,
+    options: Option<BuildOptions>,
 ) -> Result<CompileOutput, String> {
     let timeout = timeout_secs.map(Duration::from_secs).unwrap_or(compiler::DEFAULT_TIMEOUT);
+    let options = options.unwrap_or_default();
     tauri::async_runtime::spawn_blocking(move || {
-        compiler::compile(&project_path, &main_file, &tex_content, timeout)
+        compiler::compile(&project_path, &main_file, &tex_content, &options, timeout)
     })
     .await
     .map_err(|e| format!("Compile task panicked: {e}"))?

@@ -106,8 +106,10 @@ Text. See Section~\\ref{sec:method} and~\\cite{knuth1984}.
 \\maketitle
 \\tableofcontents
 
-\\input{chapters/introduction}
-\\input{chapters/conclusion}
+% \\include (not \\input): each chapter starts on a new page and can be built on
+% its own with the "Active chapter" build scope.
+\\include{chapters/introduction}
+\\include{chapters/conclusion}
 
 \\bibliographystyle{plain}
 \\bibliography{refs}

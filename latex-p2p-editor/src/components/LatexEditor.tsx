@@ -32,11 +32,19 @@ import { latex } from "codemirror-lang-latex";
 import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
 import type * as Y from "yjs";
 import type { Awareness } from "y-protocols/awareness";
+import { activeChapter } from "../services/chapters";
 
 export interface LatexEditorHandle {
   /** Scrolls to and selects the given 1-based line. */
   goToLine: (line: number) => void;
   focus: () => void;
+  /** 1-based line of the main cursor (1 when the editor is not mounted). */
+  getCursorLine: () => number;
+  /**
+   * `\include`d chapter the cursor is in (the `\include` on the cursor line or the
+   * nearest one above), or `null` when the document has no `\include`.
+   */
+  getActiveChapter: () => string | null;
 }
 
 interface LatexEditorProps {
@@ -120,6 +128,17 @@ const LatexEditor = forwardRef<LatexEditorHandle, LatexEditorProps>(function Lat
       },
       focus() {
         viewRef.current?.focus();
+      },
+      getCursorLine() {
+        const view = viewRef.current;
+        if (!view) return 1;
+        return view.state.doc.lineAt(view.state.selection.main.head).number;
+      },
+      getActiveChapter() {
+        const view = viewRef.current;
+        if (!view) return null;
+        const { state } = view;
+        return activeChapter(state.doc.toString(), state.doc.lineAt(state.selection.main.head).number);
       },
     }),
     []
