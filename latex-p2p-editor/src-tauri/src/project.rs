@@ -73,8 +73,10 @@ fn write_room_meta(project_path: &Path, meta: &RoomMeta) -> Result<(), String> {
 
 /// Ensure `.texcollab/room.json` exists and return its metadata.
 ///
-/// * If the file exists, it wins (a folder shared through the cloud must keep its room).
-///   A legacy file without `main_file` is upgraded in place.
+/// * If the file exists and no room is requested, it wins (a folder shared through the
+///   cloud must keep its room). A legacy file without `main_file` is upgraded in place.
+/// * An explicit Join (`requested_room_id`) into a folder of *another* room switches the
+///   folder to the requested room and drops the old room's CRDT state.
 /// * Otherwise a new room is written using `requested_room_id` (joining an existing
 ///   remote room) or a fresh UUID (hosting a new one).
 pub fn ensure_room_meta(
@@ -82,21 +84,38 @@ pub fn ensure_room_meta(
     requested_room_id: Option<&str>,
     main_file: &str,
 ) -> Result<RoomMeta, String> {
+    let requested = match requested_room_id.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(id) => {
+            Uuid::parse_str(id).map_err(|_| format!("'{id}' is not a valid room ID (expected a UUID)"))?;
+            Some(id.to_lowercase())
+        }
+        None => None,
+    };
+
     if let Some(mut existing) = read_room_meta(project_path)? {
-        if existing.main_file.is_none() {
-            existing.main_file = Some(main_file.to_string());
-            write_room_meta(project_path, &existing)?;
+        match &requested {
+            // An explicit Join into a folder that belonged to another room switches
+            // it to the requested room. The old room's CRDT state is dropped: merging
+            // it into an unrelated document would duplicate the text.
+            Some(id) if *id != existing.room_id => {
+                let _ = fs::remove_file(project_path.join(COLLAB_DIR).join(CRDT_FILE));
+                existing.room_id = id.clone();
+                if existing.main_file.is_none() {
+                    existing.main_file = Some(main_file.to_string());
+                }
+                write_room_meta(project_path, &existing)?;
+            }
+            _ => {
+                if existing.main_file.is_none() {
+                    existing.main_file = Some(main_file.to_string());
+                    write_room_meta(project_path, &existing)?;
+                }
+            }
         }
         return Ok(existing);
     }
 
-    let room_id = match requested_room_id.map(str::trim).filter(|s| !s.is_empty()) {
-        Some(id) => {
-            Uuid::parse_str(id).map_err(|_| format!("'{id}' is not a valid room ID (expected a UUID)"))?;
-            id.to_lowercase()
-        }
-        None => Uuid::new_v4().to_string(),
-    };
+    let room_id = requested.unwrap_or_else(|| Uuid::new_v4().to_string());
     let meta = RoomMeta {
         room_id,
         main_file: Some(main_file.to_string()),
@@ -287,9 +306,32 @@ mod tests {
         assert_eq!(first.main_file.as_deref(), Some("main.tex"));
         assert!(dir.join(COLLAB_DIR).join(ROOM_FILE).exists());
 
-        // A second call (even asking for another room / main file) must keep the existing room.
-        let second = ensure_room_meta(&dir, Some(&Uuid::new_v4().to_string()), "other.tex").unwrap();
+        // Opening it again (no requested room, other main file) keeps the existing room.
+        let second = ensure_room_meta(&dir, None, "other.tex").unwrap();
         assert_eq!(first, second);
+        // Re-joining the same room is a no-op.
+        let same = ensure_room_meta(&dir, Some(&first.room_id.to_uppercase()), "other.tex").unwrap();
+        assert_eq!(first, same);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn explicit_join_switches_a_folder_from_another_room_and_drops_its_crdt_state() {
+        let dir = temp_project("rejoin");
+        let old = ensure_room_meta(&dir, None, "thesis.tex").unwrap();
+        fs::write(dir.join(COLLAB_DIR).join(CRDT_FILE), b"old room state").unwrap();
+
+        let wanted = "4a3d7332-2a79-4643-8050-f75def979876";
+        let joined = ensure_room_meta(&dir, Some(wanted), "main.tex").unwrap();
+        assert_ne!(joined.room_id, old.room_id);
+        assert_eq!(joined.room_id, wanted);
+        assert_eq!(joined.main_file.as_deref(), Some("thesis.tex"), "root file of the folder is kept");
+        assert_eq!(read_room_meta(&dir).unwrap().unwrap(), joined);
+        assert!(!dir.join(COLLAB_DIR).join(CRDT_FILE).exists(), "stale CRDT state must be dropped");
+
+        // A bad ID never touches the existing room.
+        assert!(ensure_room_meta(&dir, Some("nope"), "main.tex").is_err());
+        assert_eq!(read_room_meta(&dir).unwrap().unwrap().room_id, wanted);
         let _ = fs::remove_dir_all(&dir);
     }
 
