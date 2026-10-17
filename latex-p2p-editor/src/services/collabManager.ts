@@ -16,9 +16,17 @@
 // * Saves are serialized (never two concurrent writes of main.tex), tracked by
 //   a dirty flag (no rewrite when nothing changed), flushed immediately on
 //   host promotion, and blocked while a freshly joined host is not synced yet.
+// * Signaling is end-to-end encrypted: y-webrtc derives an AES-GCM key from a
+//   room password (here: SHA-256 of the room id, the shared secret), so the
+//   signaling server, public or ours, only relays opaque blobs.
+// * ICE: public STUN by default, plus an optional TURN relay (user setting or
+//   build-time env) for peers behind symmetric NATs.
 
 import * as Y from "yjs";
 import { WebrtcProvider } from "y-webrtc";
+import * as sha256 from "lib0/hash/sha256";
+import * as buffer from "lib0/buffer";
+import * as string from "lib0/string";
 import { Awareness, removeAwarenessStates } from "y-protocols/awareness";
 import { saveTexAtomic, saveProjectState, initCollabProject } from "./tauriBridge";
 import { seedDocFromText, TEXT_KEY } from "./crdtSeed";
@@ -64,6 +72,8 @@ export interface ConnectionDiagnostics {
   webrtcPeers: number;
   bcPeers: number;
   synced: boolean;
+  /** Whether a TURN relay is part of the ICE configuration of this session. */
+  turnConfigured: boolean;
 }
 
 /**
@@ -98,6 +108,8 @@ export interface CollabOptions {
   signalingTimeoutMs?: number;
   /** Override the signaling server list (tests / advanced users). */
   signaling?: string[];
+  /** Override the ICE server list (tests / advanced users). */
+  iceServers?: RTCIceServer[];
 }
 
 export interface CollabSessionConfig {
@@ -157,6 +169,111 @@ export function getSignalingServers(): string[] {
   return Array.from(new Set(servers));
 }
 
+// ─── Encrypted signaling ──────────────────────────────────────────
+
+/**
+ * Password handed to y-webrtc so every signaling message (SDP offers, ICE
+ * candidates, awareness announcements) is AES-GCM encrypted between peers.
+ * The room id is already the shared secret, so the password is derived from it
+ * instead of asking the user for a second one. Hashing (synchronous, lib0)
+ * keeps the raw id out of the key derivation input; y-webrtc then runs PBKDF2
+ * over it with the room name as salt.
+ */
+export function deriveRoomPassword(roomId: string): string {
+  return buffer.toHexString(sha256.digest(string.encodeUtf8(`latexp2p:${roomId}`)));
+}
+
+// ─── ICE (STUN / TURN) configuration ─────────────────────────────
+
+export interface TurnConfig {
+  /** One or more `turn:` / `turns:` URLs, comma separated. */
+  url: string;
+  username: string;
+  credential: string;
+}
+
+/** localStorage key holding the user-configured TURN server (JSON `TurnConfig`). */
+export const TURN_OVERRIDE_KEY = "latex_turn_server";
+
+/** Public STUN servers. Enough for peers behind ordinary (non-symmetric) NATs. */
+export const DEFAULT_STUN_SERVERS = ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"];
+
+const TURN_URL_RE = /^turns?:/i;
+
+/** Splits a comma separated URL list and keeps only `turn:` / `turns:` entries. */
+export function parseTurnUrls(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((u) => u.trim())
+    .filter((u) => TURN_URL_RE.test(u));
+}
+
+/** Validates a TURN entry (from localStorage JSON, env or UI). Returns null when unusable. */
+export function parseTurnConfig(raw: unknown): TurnConfig | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const url = typeof r.url === "string" ? parseTurnUrls(r.url).join(",") : "";
+  if (!url) return null;
+  return {
+    url,
+    username: typeof r.username === "string" ? r.username.trim() : "",
+    credential: typeof r.credential === "string" ? r.credential : "",
+  };
+}
+
+export function readTurnOverride(): TurnConfig | null {
+  try {
+    const raw = globalThis.localStorage?.getItem(TURN_OVERRIDE_KEY);
+    return raw ? parseTurnConfig(JSON.parse(raw)) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Build-time TURN relay: `VITE_TURN_URL`, `VITE_TURN_USERNAME`, `VITE_TURN_CREDENTIAL`. */
+export function readTurnFromEnv(): TurnConfig | null {
+  return parseTurnConfig({
+    url: import.meta.env.VITE_TURN_URL,
+    username: import.meta.env.VITE_TURN_USERNAME,
+    credential: import.meta.env.VITE_TURN_CREDENTIAL,
+  });
+}
+
+/** Pure builder, kept separate so it can be unit-tested. */
+export function buildIceServers(input: { stun?: string[]; turn?: TurnConfig | null } = {}): RTCIceServer[] {
+  const stun = (input.stun ?? DEFAULT_STUN_SERVERS).filter((u) => /^stuns?:/i.test(u));
+  const servers: RTCIceServer[] = stun.length > 0 ? [{ urls: stun }] : [];
+  if (input.turn) {
+    const urls = parseTurnUrls(input.turn.url);
+    if (urls.length > 0) {
+      servers.push({
+        urls: urls.length === 1 ? urls[0] : urls,
+        username: input.turn.username,
+        credential: input.turn.credential,
+      });
+    }
+  }
+  return servers;
+}
+
+/**
+ * ICE servers for the next connection: Google STUN plus, in order of
+ * precedence, the TURN relay configured in the UI (localStorage) or the one
+ * baked in at build time. Without a TURN relay two peers behind symmetric NATs
+ * cannot connect.
+ */
+export function getIceServers(): RTCIceServer[] {
+  return buildIceServers({ turn: readTurnOverride() ?? readTurnFromEnv() });
+}
+
+/** True when at least one `turn:`/`turns:` URL is present in the list. */
+export function hasTurnServer(servers: RTCIceServer[]): boolean {
+  return servers.some((s) => {
+    const urls = typeof s.urls === "string" ? [s.urls] : s.urls;
+    return urls.some((u) => TURN_URL_RE.test(u));
+  });
+}
+
 /** Pure status derivation, kept separate so it can be unit-tested. */
 export function computeConnectionStatus(input: {
   hasProvider: boolean;
@@ -204,6 +321,7 @@ export class CollabManager {
     webrtcPeers: 0,
     bcPeers: 0,
     synced: false,
+    turnConfigured: false,
   };
   public saveState: SaveState = { status: "idle", lastSavedAt: null, error: null };
 
@@ -215,6 +333,8 @@ export class CollabManager {
   private readonly seedWaitMs: number;
   private readonly signalingTimeoutMs: number;
   private readonly signalingOverride?: string[];
+  private readonly iceServersOverride?: RTCIceServer[];
+  private turnConfigured = false;
 
   private isDestroyed = false;
   private dirty = false;
@@ -238,6 +358,7 @@ export class CollabManager {
     this.seedWaitMs = config.options?.seedWaitMs ?? 4000;
     this.signalingTimeoutMs = config.options?.signalingTimeoutMs ?? 10000;
     this.signalingOverride = config.options?.signaling;
+    this.iceServersOverride = config.options?.iceServers;
 
     this.doc = new Y.Doc();
     this.ytext = this.doc.getText(TEXT_KEY);
@@ -401,12 +522,17 @@ export class CollabManager {
     this.remotePeerIds.clear();
     this.connectStartedAt = Date.now();
 
+    const iceServers = this.iceServersOverride ?? getIceServers();
+    this.turnConfigured = hasTurnServer(iceServers);
     const provider = new WebrtcProvider(roomId, this.doc, {
       signaling: this.signalingOverride ?? getSignalingServers(),
+      // End-to-end encrypted signaling (see deriveRoomPassword).
+      password: deriveRoomPassword(roomId),
       awareness: this.awareness,
       maxConns: 30,
       filterBcConns: false, // instant sync across windows of the same app
-      peerOpts: {},
+      // simple-peer options: STUN/TURN for the RTCPeerConnection.
+      peerOpts: { config: { iceServers } },
     });
     this.provider = provider;
 
@@ -638,7 +764,14 @@ export class CollabManager {
       elapsedMs: Date.now() - this.connectStartedAt,
       signalingTimeoutMs: this.signalingTimeoutMs,
     });
-    this.diagnostics = { status, signaling, webrtcPeers, bcPeers, synced: this.synced };
+    this.diagnostics = {
+      status,
+      signaling,
+      webrtcPeers,
+      bcPeers,
+      synced: this.synced,
+      turnConfigured: provider !== null && this.turnConfigured,
+    };
     this.status = status;
     this.callbacks?.onStatusChange?.(status, this.diagnostics);
   }

@@ -122,6 +122,7 @@ export default function CollabPanel({ roomId, isHost, peers, status, diagnostics
             ))}
             <li>{t("conn.peersLine", { webrtc: diagnostics.webrtcPeers, bc: diagnostics.bcPeers })}</li>
             <li>{t("conn.synced", { value: diagnostics.synced ? t("conn.yes") : t("conn.no") })}</li>
+            <li>{t("conn.turn", { value: diagnostics.turnConfigured ? t("conn.yes") : t("conn.no") })}</li>
           </ul>
         )}
       </div>

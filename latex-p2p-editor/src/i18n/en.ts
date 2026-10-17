@@ -50,6 +50,7 @@ export const en = {
   "conn.waiting.help": "Connected to signaling. Nobody else is in the room yet.",
   "conn.peersLine": "WebRTC peers: {webrtc} · Local windows: {bc}",
   "conn.synced": "Synced: {value}",
+  "conn.turn": "TURN relay: {value}",
   "conn.yes": "yes",
   "conn.no": "no",
 
@@ -99,6 +100,13 @@ export const en = {
   "profile.color": "Cursor color",
   "profile.signaling": "Custom signaling server (optional)",
   "profile.signaling.help": "Used on the next connection, before the public servers.",
+  "profile.turn": "TURN relay (optional)",
+  "profile.turn.url": "TURN URL",
+  "profile.turn.username": "username",
+  "profile.turn.credential": "credential",
+  "profile.turn.help":
+    "Only needed when peers behind strict (symmetric) NATs cannot connect. Used on the next connection.",
+  "profile.turn.invalid": "The URL must start with turn: or turns: (for example turn:host:3478).",
   "profile.newWindow": "Open another window",
   "profile.newWindow.tip": "Open a second window to try collaboration on this computer",
 

@@ -52,6 +52,7 @@ export const es: Record<keyof typeof en, string> = {
   "conn.waiting.help": "Conectado a la señalización. Nadie más está en la sala todavía.",
   "conn.peersLine": "Peers WebRTC: {webrtc} · Ventanas locales: {bc}",
   "conn.synced": "Sincronizado: {value}",
+  "conn.turn": "Relay TURN: {value}",
   "conn.yes": "sí",
   "conn.no": "no",
 
@@ -101,6 +102,13 @@ export const es: Record<keyof typeof en, string> = {
   "profile.color": "Color del cursor",
   "profile.signaling": "Servidor de señalización propio (opcional)",
   "profile.signaling.help": "Se usa en la próxima conexión, antes que los servidores públicos.",
+  "profile.turn": "Relay TURN (opcional)",
+  "profile.turn.url": "URL TURN",
+  "profile.turn.username": "usuario",
+  "profile.turn.credential": "credencial",
+  "profile.turn.help":
+    "Solo hace falta cuando los peers detrás de NAT estrictos (simétricos) no logran conectar. Se usa en la próxima conexión.",
+  "profile.turn.invalid": "La URL debe empezar por turn: o turns: (por ejemplo turn:host:3478).",
   "profile.newWindow": "Abrir otra ventana",
   "profile.newWindow.tip": "Abrir una segunda ventana para probar la colaboración en este equipo",
 

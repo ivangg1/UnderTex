@@ -8,7 +8,7 @@ límites de compilación.
 ```
 ┌──────────────────────────┐      WebRTC (yjs + y-webrtc)      ┌──────────────────────────┐
 │  Peer A  (Host 👑)        │ ◄──────────────────────────────► │  Peer B  (Invitado)       │
-│  CodeMirror 6 ⇄ Y.Doc    │   señalización pública / propia   │  CodeMirror 6 ⇄ Y.Doc    │
+│  CodeMirror 6 ⇄ Y.Doc    │  señalización propia (cifrada)    │  CodeMirror 6 ⇄ Y.Doc    │
 │  tectonic (local)        │                                   │  tectonic (local)        │
 │  escribe main.tex + CRDT │                                   │  solo RAM                │
 └───────────┬──────────────┘                                   └──────────────────────────┘
@@ -30,6 +30,11 @@ límites de compilación.
 - **Elección dinámica de Host**: en una sala solo el peer con menor `clientID`
   escribe en disco (evita las *conflicted copies* de Drive/iCloud). Si el Host
   cae, el siguiente peer toma el relevo en milisegundos y consolida el estado.
+- **Colaboración por Internet sin depender de terceros**: servidor de
+  señalización propio desplegable en un clic (`render.yaml`, Fly), señalización
+  cifrada extremo a extremo con una clave derivada del ID de sala, STUN público
+  y relay TURN opcional para NAT estrictos. Los servidores públicos de y-webrtc
+  quedan solo como *fallback*.
 - **Vista previa PDF** con pdf.js: conserva scroll y zoom entre compilaciones,
   renderizado perezoso por página, exportación del PDF.
 - **Errores navegables**: la salida del compilador se parsea en una lista de
@@ -94,14 +99,14 @@ latex-p2p-editor/
 │   │   ├── TopBar.tsx          # proyecto › raíz, modo, conexión, guardado, compilador, última compilación
 │   │   ├── CollabPanel.tsx     # sala: ID, invitación, compañeros, diagnóstico de conexión
 │   │   ├── JoinPanel.tsx       # unirse a una sala con un ID
-│   │   ├── ProfilePanel.tsx    # nombre, color de cursor, idioma, servidor de señalización
+│   │   ├── ProfilePanel.tsx    # nombre, color de cursor, idioma, servidor de señalización, relay TURN
 │   │   ├── Welcome.tsx         # inicio: empezar, recientes, cómo funciona
 │   │   ├── SplitPane.tsx       # divisor arrastrable editor | PDF
 │   │   ├── LatexEditor.tsx     # CodeMirror 6 + y-codemirror.next (undo colaborativo), tema Monokai
 │   │   └── PdfPreview.tsx      # visor pdf.js + lista de errores navegable
 │   ├── i18n/                   # diccionarios en/es y hook useI18n
 │   ├── services/
-│   │   ├── collabManager.ts    # Y.Doc, WebrtcProvider, awareness, elección de Host, guardado
+│   │   ├── collabManager.ts    # Y.Doc, WebrtcProvider (señalización cifrada, STUN/TURN), elección de Host, guardado
 │   │   ├── crdtSeed.ts         # seed determinista del documento (evita texto duplicado)
 │   │   ├── latexLog.ts         # parser de logs de tectonic / pdflatex
 │   │   ├── recents.ts          # proyectos recientes (localStorage)
@@ -112,7 +117,8 @@ latex-p2p-editor/
 │   ├── project.rs              # raíz .tex, .texcollab/, guardado atómico
 │   ├── compiler.rs             # detección de motor, caché de build, timeout
 │   └── fsutil.rs               # write_atomic, validación de rutas
-└── signaling-server/           # servidor de señalización y-webrtc opcional
+├── signaling-server/           # servidor de señalización y-webrtc propio (Dockerfile, fly.toml)
+└── render.yaml                 # Blueprint de Render: despliegue en un clic del signaling-server
 ```
 
 ### Decisiones clave
@@ -139,6 +145,16 @@ latex-p2p-editor/
   proyecto con manifiesto (copia solo lo que cambió, borra lo eliminado, conserva
   los intermedios del motor), timeout con kill del grupo de procesos, PDF
   devuelto como bytes binarios por IPC (no como array JSON).
+- **Red: señalización propia, cifrada, y STUN/TURN configurables.** El
+  servidor de señalización solo presenta a los peers; la app le pasa a
+  y-webrtc una `password` (SHA-256 de `latexp2p:<ID de sala>`; el ID ya es el
+  secreto compartido) con la que cifra en AES-GCM cada mensaje de
+  señalización, así que ni el servidor propio ni los públicos ven las ofertas
+  SDP ni los candidatos ICE. Orden de servidores: el configurado en *Perfil* →
+  `VITE_SIGNALING_SERVER` → públicos de y-webrtc (solo *fallback*). Para
+  atravesar NAT se usa STUN de Google por defecto y, opcionalmente, un relay
+  TURN (*Perfil* o `VITE_TURN_URL/USERNAME/CREDENTIAL`), que viaja a
+  simple-peer como `peerOpts.config.iceServers`.
 
 ### Limitaciones conocidas (honestas)
 
@@ -148,9 +164,18 @@ latex-p2p-editor/
   en memoria sin pérdida y el Host vuelve a escribir el resultado; la nube puede
   dejar una *conflicted copy* que se puede borrar. No hay garantía de
   "cero conflictos" sin un servidor.
-- **Señalización.** Los servidores públicos de y-webrtc son de terceros; si no
-  responden, la barra lo indica (*Sin señalización*). Puedes configurar el tuyo
-  en *Perfil* o con `VITE_SIGNALING_SERVER` (ver `signaling-server/`).
+- **Señalización.** Hace falta un servidor de señalización para que los peers
+  se encuentren (nunca para el contenido). Despliega el tuyo con
+  [`render.yaml`](render.yaml) o [`signaling-server/fly.toml`](signaling-server/fly.toml)
+  y configúralo en *Perfil* o con `VITE_SIGNALING_SERVER`; los públicos de
+  y-webrtc son de terceros y solo un *fallback*. Si ninguno responde, la barra
+  lo indica (*Sin señalización*). En el plan gratuito de Render la primera
+  conexión tras un rato inactivo tarda 30-60 s (la instancia se despierta).
+- **NAT simétricos.** Con STUN solo, dos peers detrás de NAT simétricos (redes
+  corporativas, 4G/5G) no consiguen conectar: hace falta un relay **TURN**
+  (*Perfil → Relay TURN* o `VITE_TURN_*`; coturn o un proveedor gestionado).
+  La app no incluye ninguno por defecto. El panel de sala muestra si hay TURN
+  configurado.
 - **Un solo archivo editable.** Se compila el proyecto completo (`\input`,
   `.bib`, figuras) pero el editor solo abre el archivo raíz. El backend ya
   maneja rutas arbitrarias; abrir varios archivos es el siguiente paso.
@@ -162,7 +187,7 @@ latex-p2p-editor/
 
 ```bash
 cd latex-p2p-editor
-npm test                 # vitest: CRDT seed, parser de logs, CollabManager, señalización, i18n
+npm test                 # vitest: CRDT seed, parser de logs, CollabManager, señalización cifrada, STUN/TURN, i18n
 npm run build            # tsc + vite
 
 cd src-tauri
