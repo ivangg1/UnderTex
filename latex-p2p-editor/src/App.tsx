@@ -31,7 +31,14 @@ import {
   historySave,
   historyRead,
   historyDelete,
+  cloudClients,
+  locateRoomInCloud,
+  roomWorkspacesDir,
+  ensureRoomWorkspace,
+  openExternalUrl,
   type BuildOptions,
+  type CloudLocation,
+  type CloudProvider,
   type CompileOutput,
   type CompilerInfo,
   type SnapshotMeta,
@@ -48,8 +55,20 @@ import {
   type BuildScope,
   type BuildSettings,
 } from "./services/buildMode";
+import { decideCloudAssist, providerDownloadUrl, isRoomWorkspace, seedTextFor, type CloudAssist } from "./services/cloudAssist";
+import { cloudLabel } from "./services/cloud";
+import {
+  checkAndStageUpdate,
+  installStagedUpdateAndRelaunch,
+  CHECK_INTERVAL_MS,
+  FIRST_CHECK_DELAY_MS,
+  type UpdateState,
+} from "./services/updater";
+import UpdateBanner from "./components/UpdateBanner";
+import { Cloud, Download, RefreshCw } from "lucide-react";
 import {
   CollabManager,
+  type RoomInfo,
   type CollabUser,
   type PeerInfo,
   type ConnectionStatus,
@@ -124,6 +143,7 @@ interface ProjectInfo {
   path: string;
   mainFile: string;
   texFiles: string[];
+  cloud: CloudLocation;
 }
 
 /** The editor binds to these; a new object means a new editor instance. */
@@ -182,6 +202,18 @@ function App() {
   const [recents, setRecents] = useState<RecentProject[]>(() => readRecents());
   const [activePanel, setActivePanel] = useState<PanelId | null>(null);
   const [defaultParent, setDefaultParent] = useState<string | null>(null);
+
+  // ─── Cloud assist (guest joining a room kept in the host's cloud) ──
+  const [roomInfo, setRoomInfo] = useState<RoomInfo>({});
+  const [workspacesDir, setWorkspacesDir] = useState<string | null>(null);
+  const workspacesDirRef = useRef<string | null>(null);
+  workspacesDirRef.current = workspacesDir;
+  const [installedProviders, setInstalledProviders] = useState<string[]>([]);
+  const [cloudAssist, setCloudAssist] = useState<CloudAssist>({ kind: "none" });
+  const [assistDismissedFor, setAssistDismissedFor] = useState<string | null>(null);
+
+  // ─── Auto-update ────────────────────────────────────────────────
+  const [updateState, setUpdateState] = useState<UpdateState>({ status: "idle" });
 
   // ─── Collaboration ──────────────────────────────────────────────
   const [currentUser, setCurrentUser] = useState<CollabUser>(getSavedUser);
@@ -253,6 +285,29 @@ function App() {
     documentDir()
       .then((dir) => setDefaultParent(dir))
       .catch(() => setDefaultParent(null));
+    roomWorkspacesDir()
+      .then(setWorkspacesDir)
+      .catch((err) => console.error("room_workspaces_dir failed:", err));
+    cloudClients()
+      .then((clients) => setInstalledProviders(clients.map((c) => c.provider)))
+      .catch((err) => console.error("cloud_clients failed:", err));
+  }, []);
+
+  // Periodic update check: the new version downloads in the background and a
+  // banner offers the restart. Skipped in development (no release endpoint).
+  useEffect(() => {
+    if (import.meta.env.DEV) return;
+    let cancelled = false;
+    const run = () => {
+      if (!cancelled) void checkAndStageUpdate({ onState: (st) => !cancelled && setUpdateState(st) });
+    };
+    const first = setTimeout(run, FIRST_CHECK_DELAY_MS);
+    const interval = setInterval(run, CHECK_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(first);
+      clearInterval(interval);
+    };
   }, []);
 
   // ─── Compile ────────────────────────────────────────────────────
@@ -518,7 +573,7 @@ function App() {
         mainFile: data.main_file,
         isCollab: data.is_collab,
         roomId: data.room_id,
-        initialTexContent: data.tex_content,
+        initialTexContent: seedTextFor(data.project_path, workspacesDirRef.current, data.tex_content),
         initialCrdtState: data.crdt_state,
         currentUser: currentUserRef.current,
         callbacks: {
@@ -532,11 +587,17 @@ function App() {
           onRoomIdChange: setRoomId,
           onSaveStateChange: setSaveState,
           onAssetsChange: setAssets,
+          onRoomInfoChange: setRoomInfo,
         },
       });
       managerRef.current = manager;
+      // A peer whose folder lives in a cloud tells the others where the files are
+      // (first writer wins; "local" is never published).
+      if (manager.mode === "collab" && data.cloud.provider !== "local") {
+        manager.setRoomInfo({ cloud: data.cloud, hostName: currentUserRef.current.name });
+      }
 
-      const info = { path: data.project_path, mainFile: data.main_file, texFiles: data.tex_files };
+      const info = { path: data.project_path, mainFile: data.main_file, texFiles: data.tex_files, cloud: data.cloud };
       projectRef.current = info;
       setProject(info);
       setSession({
@@ -552,6 +613,8 @@ function App() {
       setDiagnostics(manager.diagnostics);
       setSaveState(manager.saveState);
       setAssets(manager.assets);
+      setRoomInfo(manager.getRoomInfo());
+      setCloudAssist({ kind: "none" });
       setCompile(EMPTY_COMPILE);
       lastCompiledRef.current = null;
       // Chapter names belong to a project: back to the full document.
@@ -678,6 +741,10 @@ function App() {
     if (!manager) return;
     try {
       await manager.startCollaboration();
+      const cur = projectRef.current;
+      if (cur && cur.cloud.provider !== "local") {
+        manager.setRoomInfo({ cloud: cur.cloud, hostName: currentUserRef.current.name });
+      }
       setActivePanel("room");
     } catch (err) {
       console.error("Failed to start collaboration:", err);
@@ -685,15 +752,31 @@ function App() {
     }
   }, [t]);
 
+  /**
+   * Join by room ID without asking for a folder:
+   * 1. if the host's shared cloud folder is already synced here, open it;
+   * 2. otherwise work in an app-managed workspace and switch to the cloud
+   *    folder automatically once it appears (see the cloud-assist effect).
+   */
   const handleJoinRoom = useCallback(
     async (id: string) => {
+      const roomIdClean = id.trim().toLowerCase();
       try {
-        const folder = await pickProjectFolder();
-        if (!folder) return;
-        const data = await readProject(folder);
-        await initCollabProject(folder, data.main_file, id);
-        await openProject(folder);
+        const found = await locateRoomInCloud(roomIdClean);
+        if (found) {
+          await openProject(found);
+          setActivePanel("room");
+          setBanner({ kind: "info", text: t("join.foundInCloud", { path: found }) });
+          return;
+        }
+        const workspace = await ensureRoomWorkspace(roomIdClean);
+        if (!workspacesDirRef.current) workspacesDirRef.current = await roomWorkspacesDir();
+        const data = await readProject(workspace);
+        await initCollabProject(workspace, data.main_file, roomIdClean);
+        await openProject(workspace);
+        setAssistDismissedFor(null);
         setActivePanel("room");
+        setBanner({ kind: "info", text: t("join.workspace") });
       } catch (err) {
         console.error("Failed to join room:", err);
         setBanner({ kind: "error", text: t("error.join", { message: errorMessage(err) }) });
@@ -701,6 +784,77 @@ function App() {
     },
     [openProject, t]
   );
+
+  // Any peer whose folder is in a cloud publishes it once collaboration is on.
+  useEffect(() => {
+    const manager = managerRef.current;
+    if (!manager || mode !== "collab" || !project || project.cloud.provider === "local") return;
+    manager.setRoomInfo({ cloud: project.cloud, hostName: currentUserRef.current.name });
+  }, [mode, project]);
+
+  const inWorkspace = isRoomWorkspace(project?.path ?? null, workspacesDir);
+  const roomCloud: CloudLocation | null = roomInfo.cloud
+    ? { provider: roomInfo.cloud.provider as CloudProvider, account: roomInfo.cloud.account }
+    : null;
+
+  // Decide what to tell a guest about the host's cloud folder.
+  useEffect(() => {
+    if (mode !== "collab" || !project) {
+      setCloudAssist({ kind: "none" });
+      return;
+    }
+    setCloudAssist(
+      decideCloudAssist({ roomCloud, installedProviders, isWorkspace: inWorkspace, localCloud: project.cloud })
+    );
+  }, [mode, project, roomCloud?.provider, roomCloud?.account, installedProviders, inWorkspace]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Looks for the host's folder locally; switches the session to it when found. */
+  const tryLocateRoomFolder = useCallback(async (): Promise<boolean> => {
+    const id = roomId;
+    const provider = roomCloud?.provider;
+    if (!id || !provider) return false;
+    try {
+      const clients = await cloudClients();
+      setInstalledProviders(clients.map((c) => c.provider));
+      const found = await locateRoomInCloud(id);
+      if (!found) return false;
+      await openProject(found);
+      setActivePanel("room");
+      setBanner({ kind: "info", text: t("cloud.assist.switched", { provider: t(`cloud.provider.${provider}` as MessageKey), path: found }) });
+      return true;
+    } catch (err) {
+      console.error("locate_room_in_cloud failed:", err);
+      return false;
+    }
+  }, [roomId, roomCloud?.provider, openProject, t]);
+
+  // While waiting for the shared folder, poll every 15 s.
+  useEffect(() => {
+    if (cloudAssist.kind !== "locate") return;
+    let cancelled = false;
+    const tick = () => {
+      if (!cancelled) void tryLocateRoomFolder();
+    };
+    tick();
+    const interval = setInterval(tick, 15_000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [cloudAssist.kind, tryLocateRoomFolder]);
+
+  const handleInstallUpdate = useCallback(async () => {
+    try {
+      if (managerRef.current && projectRef.current) {
+        await historySave(projectRef.current.path, projectRef.current.mainFile, managerRef.current.getText(), null, currentUserRef.current.name).catch(() => undefined);
+        await managerRef.current.dispose();
+        managerRef.current = null;
+      }
+      await installStagedUpdateAndRelaunch();
+    } catch (err) {
+      setUpdateState({ status: "error", message: errorMessage(err) });
+    }
+  }, []);
 
   const handleStopCollab = useCallback(async () => {
     try {
@@ -839,6 +993,9 @@ function App() {
         status={connectionStatus}
         diagnostics={diagnostics}
         assets={assets}
+        cloud={project?.cloud ?? null}
+        roomCloud={roomCloud}
+        isWorkspace={inWorkspace}
         onStopCollab={handleStopCollab}
       />
     );
@@ -914,6 +1071,7 @@ function App() {
       <div className="flex-1 min-w-0 flex flex-col">
         <TopBar
           projectPath={project?.path ?? null}
+          cloud={project?.cloud ?? null}
           mainFile={project?.mainFile ?? null}
           texFiles={project?.texFiles ?? []}
           mode={mode}
@@ -946,6 +1104,43 @@ function App() {
             <span className="truncate">{banner.text}</span>
             <button onClick={() => setBanner(null)} className="ml-3 text-mk-fg3 hover:text-mk-fg cursor-pointer">
               {t("action.close")}
+            </button>
+          </div>
+        )}
+
+        <UpdateBanner
+          state={updateState}
+          onInstall={() => void handleInstallUpdate()}
+          onRetry={() => void checkAndStageUpdate({ onState: setUpdateState })}
+          onDismiss={() => setUpdateState({ status: "idle" })}
+        />
+
+        {(cloudAssist.kind === "install" || cloudAssist.kind === "locate") && assistDismissedFor !== roomId && roomCloud && (
+          <div className="flex items-center gap-3 px-4 py-1.5 text-xs text-mk-fg shrink-0 border-b bg-mk-blue/10 border-mk-blue/40">
+            <Cloud size={13} className="shrink-0 text-mk-blue" />
+            <span className="truncate">
+              {cloudAssist.kind === "install"
+                ? t("cloud.assist.install", { provider: cloudLabel(roomCloud, t) })
+                : t("cloud.assist.locate", { provider: cloudLabel(roomCloud, t) })}
+            </span>
+            <span className="flex-1" />
+            {cloudAssist.kind === "install" && compilerInfo && providerDownloadUrl(roomCloud.provider, compilerInfo.os) && (
+              <button
+                onClick={() => void openExternalUrl(providerDownloadUrl(roomCloud.provider, compilerInfo.os) as string)}
+                className="flex items-center gap-1 px-2 py-1 bg-mk-blue text-mk-bg2 font-semibold hover:bg-mk-yellow cursor-pointer"
+              >
+                <Download size={12} /> {t("cloud.assist.download", { provider: t(`cloud.provider.${roomCloud.provider}` as MessageKey) })}
+              </button>
+            )}
+            <button
+              onClick={() => void tryLocateRoomFolder()}
+              className="flex items-center gap-1 text-mk-fg2 hover:text-mk-fg cursor-pointer"
+              title={t("cloud.assist.retry")}
+            >
+              <RefreshCw size={12} /> {t("cloud.assist.retry")}
+            </button>
+            <button onClick={() => setAssistDismissedFor(roomId)} className="text-mk-fg4 hover:text-mk-fg cursor-pointer" title={t("cloud.assist.dismiss")}>
+              ×
             </button>
           </div>
         )}

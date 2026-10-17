@@ -24,6 +24,11 @@
 // * Project assets (images, .bib, .sty, \input chapters) travel through the same
 //   doc and connections (assetSync.ts), so a guest can compile without the
 //   host's folder. Asset-only transactions never trigger a main.tex save.
+// * Only peers with an open data channel (or a BroadcastChannel) count as
+//   connected. y-webrtc lists a peer as soon as it announces itself, before
+//   any handshake; a peer that never answers would otherwise show
+//   "Connected" and block the host's saves. Such half-open connections are
+//   destroyed after a handshake timeout.
 
 import * as Y from "yjs";
 import { WebrtcProvider } from "y-webrtc";
@@ -119,6 +124,14 @@ export interface CollabCallbacks {
   onRoomIdChange?: (roomId: string | null) => void;
   onSaveStateChange?: (state: SaveState) => void;
   onAssetsChange?: (status: AssetSyncStatus) => void;
+  /** Room-wide info published by the host (cloud location of the project folder…). */
+  onRoomInfoChange?: (info: RoomInfo) => void;
+}
+
+/** Shared, CRDT-replicated metadata about the room (a Y.Map named "meta"). */
+export interface RoomInfo {
+  cloud?: { provider: string; account: string | null };
+  hostName?: string;
 }
 
 export interface CollabOptions {
@@ -138,6 +151,8 @@ export interface CollabOptions {
   assetMaxBytes?: number;
   /** Rescan interval of the project folder for asset sync. Default 4000 ms. */
   assetScanMs?: number;
+  /** How long a WebRTC connection may stay half-open before it is dropped. Default 20000 ms. */
+  handshakeTimeoutMs?: number;
 }
 
 export interface CollabSessionConfig {
@@ -340,12 +355,42 @@ interface AwarenessState {
 
 type Unsubscribe = () => void;
 
+/** The parts of y-webrtc's WebrtcConn (and its simple-peer instance) used here. */
+interface WebrtcConnLike {
+  connected: boolean;
+  closed: boolean;
+  peer?: {
+    on(event: string, handler: () => void): void;
+    removeListener(event: string, handler: () => void): void;
+    destroy(): void;
+  };
+}
+
+interface ConnWatch {
+  timer: ReturnType<typeof setTimeout> | null;
+  cleanup: Unsubscribe;
+}
+
+/** Remote peers with an open WebRTC data channel, plus BroadcastChannel peers. */
+export function connectedPeerIds(room: {
+  webrtcConns: Map<string, { connected: boolean }>;
+  bcConns: Set<string>;
+}): Set<string> {
+  const ids = new Set<string>(room.bcConns);
+  room.webrtcConns.forEach((conn, id) => {
+    if (conn.connected) ids.add(id);
+  });
+  return ids;
+}
+
 /**
  * Manages the Yjs CRDT document, WebRTC P2P sync, awareness, dynamic host election
  * and conflict-free cloud persistence with dual-mode operation (Solo vs Collab).
  */
 export class CollabManager {
   public readonly doc: Y.Doc;
+  /** Replicated room metadata; see [`RoomInfo`]. */
+  public readonly meta: Y.Map<RoomInfo[keyof RoomInfo]>;
   public readonly ytext: Y.Text;
   public readonly awareness: Awareness;
   public provider: WebrtcProvider | null = null;
@@ -374,6 +419,7 @@ export class CollabManager {
   private readonly signalingTimeoutMs: number;
   private readonly signalingOverride?: string[];
   private readonly iceServersOverride?: RTCIceServer[];
+  private readonly handshakeTimeoutMs: number;
   private turnConfigured = false;
   private readonly assetIoOverride?: AssetIO;
   private readonly assetMaxBytes?: number;
@@ -392,6 +438,7 @@ export class CollabManager {
   private connectStartedAt = 0;
   private signalingTimer: ReturnType<typeof setTimeout> | null = null;
   private providerCleanups: Unsubscribe[] = [];
+  private connWatches = new Map<WebrtcConnLike, ConnWatch>();
 
   constructor(config: CollabSessionConfig) {
     this.projectPath = config.projectPath;
@@ -407,9 +454,12 @@ export class CollabManager {
     this.assetIoOverride = config.options?.assetIo;
     this.assetMaxBytes = config.options?.assetMaxBytes;
     this.assetScanMs = config.options?.assetScanMs;
+    this.handshakeTimeoutMs = config.options?.handshakeTimeoutMs ?? 20000;
 
     this.doc = new Y.Doc();
     this.ytext = this.doc.getText(TEXT_KEY);
+    this.meta = this.doc.getMap<RoomInfo[keyof RoomInfo]>("meta");
+    this.meta.observe(this.handleMetaChange);
     this.awareness = new Awareness(this.doc);
 
     if (config.initialCrdtState && config.initialCrdtState.length > 0) {
@@ -444,6 +494,36 @@ export class CollabManager {
   }
 
   // ─── Public API ───────────────────────────────────────────────────
+
+  /** Room metadata as currently replicated. */
+  public getRoomInfo(): RoomInfo {
+    const info: RoomInfo = {};
+    const cloud = this.meta.get("cloud") as RoomInfo["cloud"] | undefined;
+    const hostName = this.meta.get("hostName") as string | undefined;
+    if (cloud) info.cloud = cloud;
+    if (hostName) info.hostName = hostName;
+    return info;
+  }
+
+  /**
+   * Publishes room metadata to every peer. Any peer whose folder is in a cloud
+   * may call it; only a cloud location (not "local") is written, and never over
+   * an existing one, so a peer in a temporary workspace cannot erase it.
+   */
+  public setRoomInfo(info: RoomInfo): void {
+    this.doc.transact(() => {
+      if (info.cloud && info.cloud.provider !== "local") {
+        const current = this.meta.get("cloud") as RoomInfo["cloud"] | undefined;
+        if (!current || current.provider === "local") this.meta.set("cloud", info.cloud);
+      }
+      if (info.hostName) this.meta.set("hostName", info.hostName);
+    }, "room-info");
+  }
+
+  private readonly handleMetaChange = (): void => {
+    if (this.isDestroyed) return;
+    this.callbacks?.onRoomInfoChange?.(this.getRoomInfo());
+  };
 
   /** Current document text. */
   public getText(): string {
@@ -550,6 +630,7 @@ export class CollabManager {
     try {
       this.teardownProvider();
       this.doc.off("update", this.handleDocUpdate);
+      this.meta.unobserve(this.handleMetaChange);
       this.awareness.off("change", this.handleAwarenessChange);
       this.awareness.destroy();
       this.doc.destroy();
@@ -602,7 +683,8 @@ export class CollabManager {
     const onStatus = () => {
       if (this.provider !== provider) return;
       this.publishPeerId();
-      this.updateDiagnostics();
+      this.watchWebrtcConns(provider);
+      this.refreshRemotePeers(provider, []);
     };
     const onSynced = (event: { synced: boolean }) => {
       if (this.provider !== provider) return;
@@ -628,13 +710,8 @@ export class CollabManager {
     }) => {
       if (this.provider !== provider) return;
       this.publishPeerId();
-      this.remotePeerIds = new Set([...event.webrtcPeers, ...event.bcPeers]);
-      const gone = event.removed.filter((id) => !this.remotePeerIds.has(id));
-      if (gone.length > 0) {
-        this.dropAwarenessOfPeers(gone);
-      }
-      this.updateDiagnostics();
-      this.handleAwarenessChange();
+      this.watchWebrtcConns(provider);
+      this.refreshRemotePeers(provider, event.removed);
     };
     provider.on("status", onStatus);
     provider.on("synced", onSynced);
@@ -678,6 +755,7 @@ export class CollabManager {
 
   private teardownProvider(): void {
     this.detachAssetSync();
+    this.unwatchConns(Array.from(this.connWatches.keys()));
     for (const cleanup of this.providerCleanups.splice(0)) {
       try {
         cleanup();
@@ -748,6 +826,90 @@ export class CollabManager {
     this.assetSync = null;
     this.assets = EMPTY_ASSET_STATUS;
     this.callbacks?.onAssetsChange?.(EMPTY_ASSET_STATUS);
+  }
+
+  // ─── WebRTC connection tracking ───────────────────────────────────
+
+  /**
+   * Recomputes the connected remote peers. Awareness entries of peers that just
+   * left (`removed`) or whose connection is no longer open are dropped.
+   */
+  private refreshRemotePeers(provider: WebrtcProvider, removed: string[]): void {
+    const next = provider.room ? connectedPeerIds(provider.room) : new Set<string>();
+    const gone = new Set(removed.filter((id) => !next.has(id)));
+    this.remotePeerIds.forEach((id) => {
+      if (!next.has(id)) gone.add(id);
+    });
+    this.remotePeerIds = next;
+    if (gone.size > 0) {
+      this.dropAwarenessOfPeers(Array.from(gone));
+    }
+    this.updateDiagnostics();
+    this.handleAwarenessChange();
+  }
+
+  /**
+   * Follows every WebrtcConn of the room: y-webrtc emits "peers" when a conn is
+   * created or closed but not when its handshake completes, so the connect
+   * event is observed here. A conn still half-open after the handshake timeout
+   * is destroyed; y-webrtc's own close handler then removes it from the room.
+   */
+  private watchWebrtcConns(provider: WebrtcProvider): void {
+    const conns = new Set<WebrtcConnLike>(
+      provider.room ? (Array.from(provider.room.webrtcConns.values()) as WebrtcConnLike[]) : []
+    );
+    this.unwatchConns(Array.from(this.connWatches.keys()).filter((conn) => !conns.has(conn)));
+    conns.forEach((conn) => {
+      if (this.connWatches.has(conn) || conn.closed) return;
+      const peer = conn.peer;
+      const onChange = () => {
+        if (this.provider !== provider) return;
+        if (conn.connected) this.clearConnTimer(conn);
+        this.refreshRemotePeers(provider, []);
+      };
+      peer?.on("connect", onChange);
+      peer?.on("close", onChange);
+      const watch: ConnWatch = {
+        timer: null,
+        cleanup: () => {
+          peer?.removeListener("connect", onChange);
+          peer?.removeListener("close", onChange);
+        },
+      };
+      if (!conn.connected) {
+        watch.timer = setTimeout(() => {
+          watch.timer = null;
+          if (this.provider !== provider || conn.connected || conn.closed) return;
+          console.warn("CollabManager: dropping a WebRTC peer that never completed its handshake");
+          try {
+            peer?.destroy();
+          } catch (err) {
+            console.error("CollabManager: error destroying half-open connection:", err);
+          }
+        }, this.handshakeTimeoutMs);
+      }
+      this.connWatches.set(conn, watch);
+    });
+  }
+
+  private clearConnTimer(conn: WebrtcConnLike): void {
+    const watch = this.connWatches.get(conn);
+    if (watch?.timer) {
+      clearTimeout(watch.timer);
+      watch.timer = null;
+    }
+  }
+
+  private unwatchConns(conns: WebrtcConnLike[]): void {
+    for (const conn of conns) {
+      this.clearConnTimer(conn);
+      try {
+        this.connWatches.get(conn)?.cleanup();
+      } catch {
+        // peer already gone
+      }
+      this.connWatches.delete(conn);
+    }
   }
 
   // ─── Seeding ──────────────────────────────────────────────────────
@@ -862,7 +1024,12 @@ export class CollabManager {
       url: conn.url,
       connected: Boolean(conn.connected),
     }));
-    const webrtcPeers = provider?.room ? provider.room.webrtcConns.size : 0;
+    // Only open connections count: a peer that announced itself but never
+    // completed the handshake is not "connected".
+    let webrtcPeers = 0;
+    provider?.room?.webrtcConns.forEach((conn) => {
+      if (conn.connected) webrtcPeers++;
+    });
     const bcPeers = provider?.room ? provider.room.bcConns.size : 0;
     const status = computeConnectionStatus({
       hasProvider: provider !== null,

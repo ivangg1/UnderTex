@@ -1,11 +1,13 @@
 // Room panel: room ID, invite, peers, connection diagnostics, disconnect.
 
 import { useState } from "react";
-import { Check, Copy, Crown, Share2, User, WifiOff, AlertTriangle, Files, Upload } from "lucide-react";
+import { Check, Cloud, Copy, Crown, HardDrive, Info, Share2, User, WifiOff, AlertTriangle, Files, Upload } from "lucide-react";
 import { useI18n } from "../i18n";
 import type { ConnectionDiagnostics, ConnectionStatus, PeerInfo } from "../services/collabManager";
 import type { AssetSyncStatus } from "../services/assetSync";
 import { connectionLabel } from "./ConnectionBadge";
+import type { CloudLocation } from "../services/tauriBridge";
+import { cloudLabel, isCloud } from "../services/cloud";
 
 interface CollabPanelProps {
   roomId: string;
@@ -14,6 +16,12 @@ interface CollabPanelProps {
   status: ConnectionStatus;
   diagnostics: ConnectionDiagnostics | null;
   assets: AssetSyncStatus;
+  /** Where the open project folder lives (null when unknown). */
+  cloud: CloudLocation | null;
+  /** Cloud location published by the host (what guests should sync). */
+  roomCloud: CloudLocation | null;
+  /** The open project is an app-managed workspace (joined without a folder). */
+  isWorkspace?: boolean;
   onStopCollab: () => void;
 }
 
@@ -101,7 +109,18 @@ function AssetsSection({ assets }: { assets: AssetSyncStatus }) {
   );
 }
 
-export default function CollabPanel({ roomId, isHost, peers, status, diagnostics, assets, onStopCollab }: CollabPanelProps) {
+export default function CollabPanel({
+  roomId,
+  isHost,
+  peers,
+  status,
+  diagnostics,
+  assets,
+  cloud,
+  roomCloud,
+  isWorkspace = false,
+  onStopCollab,
+}: CollabPanelProps) {
   const { t, locale } = useI18n();
   const [copied, setCopied] = useState<"id" | "invite" | null>(null);
 
@@ -201,6 +220,30 @@ export default function CollabPanel({ roomId, isHost, peers, status, diagnostics
       </div>
 
       <AssetsSection assets={assets} />
+      {cloud && (
+        <div className={SECTION}>
+          <span className={LABEL}>{t("collab.files")}</span>
+          {!isHost && roomCloud && isCloud(roomCloud) && roomCloud.provider !== cloud.provider && (
+            <p className="flex gap-1.5 text-[11px] text-mk-blue leading-relaxed">
+              <Cloud size={12} className="shrink-0 mt-0.5" />
+              {t("collab.files.hostCloud", { provider: cloudLabel(roomCloud, t) })}
+            </p>
+          )}
+          <div
+            className="flex items-center gap-2 min-w-0"
+            title={isCloud(cloud) ? t("collab.files.cloudTip", { provider: t(`cloud.provider.${cloud.provider}`) }) : undefined}
+          >
+            {isCloud(cloud) ? <Cloud size={13} className="shrink-0 text-mk-blue" /> : <HardDrive size={13} className="shrink-0 text-mk-fg3" />}
+            <span className="text-mk-fg truncate">{cloudLabel(cloud, t)}</span>
+          </div>
+          {!isCloud(cloud) && isHost && !isWorkspace && (
+            <p className="flex gap-1.5 text-[11px] text-mk-fg3 leading-relaxed">
+              <Info size={12} className="shrink-0 mt-0.5" />
+              {t("collab.files.localHint")}
+            </p>
+          )}
+        </div>
+      )}
 
       <div className="px-4 py-3">
         <button
