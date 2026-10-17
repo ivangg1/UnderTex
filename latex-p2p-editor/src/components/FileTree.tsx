@@ -228,7 +228,7 @@ export default function FileTree({
         return (
           <div
             key={node.path}
-            className="flex items-center gap-1.5 px-2 py-1 bg-mk-bg3 border-l-2 border-mk-yellow text-xs"
+            className="flex items-center gap-1.5 h-7 pr-1 bg-mk-bg3 border-l-2 border-mk-yellow text-xs"
             style={{ paddingLeft: `${depth * 14 + 10}px` }}
           >
             {isDir ? <Folder size={14} className="text-mk-fg2 shrink-0" /> : getFileIcon(node.name)}
@@ -267,10 +267,8 @@ export default function FileTree({
       return (
         <div key={node.path} className="flex flex-col">
           <div
-            className={`group relative flex items-center gap-1.5 px-2 py-1.5 text-xs select-none cursor-pointer transition-colors ${
-              isActive
-                ? "bg-mk-bg text-mk-fg font-medium"
-                : "text-mk-fg2 hover:bg-mk-bg3/60 hover:text-mk-fg"
+            className={`group relative flex items-center gap-1.5 h-7 pr-2 text-xs select-none cursor-pointer ${
+              isActive ? "bg-mk-bg text-mk-fg font-medium" : "text-mk-fg2 hover:bg-mk-hover hover:text-mk-fg"
             }`}
             style={{ paddingLeft: `${depth * 14 + 10}px` }}
             onClick={() => {
@@ -320,14 +318,19 @@ export default function FileTree({
             )}
 
             {/* Action buttons (hover) */}
-            <div className="hidden group-hover:flex items-center gap-1 shrink-0 bg-mk-bg2/90 pl-1">
+            {/* Overlaid on the row's right end (same background), so hovering never changes the row height. */}
+            <div
+              className={`absolute right-1 inset-y-0 hidden group-hover:flex items-center gap-0.5 pl-3 ${
+                isActive ? "bg-mk-bg" : "bg-mk-hover"
+              }`}
+            >
               {!isDir && node.name.toLowerCase().endsWith(".tex") && !isRoot && onSetRootFile && (
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
                     onSetRootFile(node.path);
                   }}
-                  className="p-1 text-mk-fg3 hover:text-mk-yellow cursor-pointer rounded"
+                  className="p-1 text-mk-fg3 hover:text-mk-yellow hover:bg-mk-bg3 cursor-pointer rounded"
                   title={t("files.setMain")}
                 >
                   <Crown size={12} />
@@ -340,7 +343,7 @@ export default function FileTree({
                     if (isCollapsed) toggleDir(node.path);
                     handleStartCreate(false, node.path);
                   }}
-                  className="p-1 text-mk-fg3 hover:text-mk-fg cursor-pointer rounded"
+                  className="p-1 text-mk-fg3 hover:text-mk-fg hover:bg-mk-bg3 cursor-pointer rounded"
                   title={t("files.newFile")}
                 >
                   <FilePlus size={12} />
@@ -351,7 +354,7 @@ export default function FileTree({
                   e.stopPropagation();
                   handleStartRename(node);
                 }}
-                className="p-1 text-mk-fg3 hover:text-mk-fg cursor-pointer rounded"
+                className="p-1 text-mk-fg3 hover:text-mk-fg hover:bg-mk-bg3 cursor-pointer rounded"
                 title={t("files.rename")}
               >
                 <Edit3 size={12} />
@@ -361,7 +364,7 @@ export default function FileTree({
                   e.stopPropagation();
                   setDeletingPath(node.path);
                 }}
-                className="p-1 text-mk-fg3 hover:text-mk-red cursor-pointer rounded"
+                className="p-1 text-mk-fg3 hover:text-mk-red hover:bg-mk-bg3 cursor-pointer rounded"
                 title={t("files.delete")}
               >
                 <Trash2 size={12} />
@@ -446,7 +449,7 @@ export default function FileTree({
               </button>
               <button
                 onClick={() => void handleConfirmDelete()}
-                className="px-3 py-1 rounded bg-mk-red hover:bg-mk-red/80 text-white font-medium cursor-pointer transition-colors"
+                className="px-3 py-1 rounded bg-mk-red hover:bg-mk-red/80 text-mk-bg2 font-semibold cursor-pointer transition-colors"
               >
                 {t("files.delete")}
               </button>

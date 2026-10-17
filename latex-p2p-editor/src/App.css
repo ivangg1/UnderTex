@@ -1,7 +1,9 @@
 @import "tailwindcss";
 
-/* ─── Monokai Pro palette as Tailwind theme tokens (bg-mk-bg, text-mk-fg, …) ─── */
-@theme {
+/* ─── Monokai Pro palette as Tailwind theme tokens (bg-mk-bg, text-mk-fg, …) ───
+   Dark by default; `html[data-theme="light"]` swaps in Monokai Pro Light.
+   Utilities read the variables, so the theme switches without a reload. */
+@theme static {
   --color-mk-bg: #2d2a2e; /* editor / main surface */
   --color-mk-bg2: #221f22; /* rail, top bar, panels */
   --color-mk-bg3: #403e41; /* borders, hover */
@@ -16,9 +18,33 @@
   --color-mk-green: #a9dc76;
   --color-mk-blue: #78dce8;
   --color-mk-purple: #ab9df2;
+  --color-mk-canvas: #1e1c1f; /* behind PDF pages and image previews */
+  --color-mk-line: #35333666; /* editor active line */
+  --color-mk-hover: #332f33; /* hovered list rows (solid, so overlays can match it) */
 
   --font-sans: "SF Pro Text", Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", "Fira Code", Menlo, Consolas, monospace;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --color-mk-bg: #faf4f2;
+  --color-mk-bg2: #efe8e6;
+  --color-mk-bg3: #ddd5d3;
+  --color-mk-bg4: #bfb7b5;
+  --color-mk-fg: #29242a;
+  --color-mk-fg2: #4d474e;
+  --color-mk-fg3: #6e686c;
+  --color-mk-fg4: #918a8d;
+  --color-mk-red: #e14775;
+  --color-mk-orange: #e16032;
+  --color-mk-yellow: #cc7a0a;
+  --color-mk-green: #269d69;
+  --color-mk-blue: #1c8ca8;
+  --color-mk-purple: #7058be;
+  --color-mk-canvas: #e4dcda;
+  --color-mk-line: #ede5e399;
+  --color-mk-hover: #e6dedc;
 }
 
 :root {
@@ -31,8 +57,8 @@ body,
 #root {
   height: 100%;
   margin: 0;
-  background: #221f22;
-  color: #fcfcfa;
+  background: var(--color-mk-bg2);
+  color: var(--color-mk-fg);
   font-family: var(--font-sans);
   overflow: hidden;
 }
@@ -40,14 +66,14 @@ body,
 /* Thin IDE-style scrollbars */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #5b595c transparent;
+  scrollbar-color: var(--color-mk-bg4) transparent;
 }
 *::-webkit-scrollbar {
   width: 9px;
   height: 9px;
 }
 *::-webkit-scrollbar-thumb {
-  background: #5b595c;
+  background: var(--color-mk-bg4);
   border-radius: 6px;
   border: 2px solid transparent;
   background-clip: padding-box;
@@ -57,8 +83,8 @@ body,
 }
 
 select option {
-  background: #2d2a2e;
-  color: #fcfcfa;
+  background: var(--color-mk-bg);
+  color: var(--color-mk-fg);
 }
 
 /* ─── Remote cursors & selections (y-codemirror.next) ─── */

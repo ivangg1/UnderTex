@@ -92,10 +92,19 @@ compile limits.
   open file (the one at the cursor highlighted) and its `\input`/`\include`d
   files (click to open; missing ones flagged). `⌘P` fuzzy-finds any file, `@`
   in the same box jumps to a section, `:` to a line.
+- **Smart references**: typing `\ref{`, `\cref{`, `\eqref{`… lists every
+  `\label` of the project (open files, files shared by peers and files only on
+  disk) with what it labels; `\cite{` lists the `.bib` keys with author, year
+  and title; `\input{`, `\include{`, `\includegraphics{` and
+  `\bibliography{` complete project paths relative to the root file. `F12` on
+  a reference, citation or path opens its definition in the right file.
+- **Dark and light themes**: Monokai Pro and Monokai Pro Light, or follow the
+  system; switch from the rail (sun / moon) or the profile panel. Every color is
+  a CSS variable, so the editor, panels and previews switch instantly.
 - **IDE layout**: the top bar holds the project menu (new, open, join, recent,
-  new window), the root file, *Go to file…* and the primary actions — **Build**
-  (with the auto-build switch), **Share** / Room and **Export** — plus the
-  build options (scope, draft, preamble). The left rail switches views (Files,
+  new window), the root file, *Go to file…*, the build options (scope, draft,
+  preamble), the **Auto / Manual build** switch, **Share** / Room and
+  **Export**. Building on demand is **Recompile** in the PDF preview (or `⌘S`). The left rail switches views (Files,
   Outline, History, Room) with one side panel at a time; a bottom status bar
   shows mode, connection, save state, problems, cursor line, compiler and the
   last build. Draggable editor | PDF split, Monokai Pro palette. English and
@@ -115,6 +124,7 @@ compile limits.
 | Show cursor position in the PDF | `⌘⇧J` | `Ctrl+Shift+J` |
 | Open the source of a PDF spot | `⌘`-click | `Ctrl`-click |
 | Export PDF | `⌘E` | `Ctrl+E` |
+| Go to definition (`\ref`, `\cite`, `\input`, figure) | `F12` | `F12` |
 | Open folder | `⌘O` | `Ctrl+O` |
 | UI zoom | `⌘`/`⌥` `+` `−` `0` | `Ctrl`/`Alt` `+` `−` `0` |
 
@@ -331,7 +341,7 @@ installs. [`ci.yml`](.github/workflows/ci.yml) runs vitest, the build and
 
 ```bash
 cd latex-p2p-editor
-npm test                 # vitest: CRDT seed, parser, CollabManager, multi-file collaboration, outline, quick open, shortcuts, file tree, asset sync protocol, encrypted signaling, STUN/TURN, i18n, templates, diffs, chapters, build modes, SyncTeX mapping
+npm test                 # vitest: CRDT seed, parser, CollabManager, multi-file collaboration, outline, quick open, shortcuts, file tree, reference index and completion, themes, asset sync protocol, encrypted signaling, STUN/TURN, i18n, templates, diffs, chapters, build modes, SyncTeX mapping
 npm run build            # tsc + vite
 
 cd src-tauri

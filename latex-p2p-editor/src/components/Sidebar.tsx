@@ -4,11 +4,12 @@
 // at a time; clicking the active view (or ⌘B) collapses the panel.
 
 import type { ReactNode } from "react";
-import { Crown, FolderTree, History, Languages, ListTree, Users, X } from "lucide-react";
-import { useI18n } from "../i18n";
+import { Crown, FolderTree, History, Languages, ListTree, Monitor, Moon, Sun, Users, X } from "lucide-react";
+import { useI18n, type MessageKey } from "../i18n";
 import type { CollabMode, ConnectionStatus } from "../services/collabManager";
 import type { CollabUser } from "../services/collabManager";
 import { shortcutLabel } from "../services/shortcuts";
+import { nextThemePref, setThemePref, useTheme } from "../services/theme";
 import { connectionLabel } from "./ConnectionBadge";
 
 export type PanelId = "files" | "outline" | "history" | "room" | "join" | "profile" | "new";
@@ -75,6 +76,7 @@ export default function Sidebar({
 }: SidebarProps) {
   const { t, locale } = useI18n();
   const conn = connectionLabel(connectionStatus, t);
+  const [themePref] = useTheme();
   const icon = { size: 20, strokeWidth: 1.6 };
 
   return (
@@ -135,6 +137,11 @@ export default function Sidebar({
           title={t("toolbar.profile.tip")}
           onClick={() => onTogglePanel("profile")}
           active={activePanel === "profile"}
+        />
+        <RailButton
+          icon={themePref === "dark" ? <Moon size={18} strokeWidth={1.6} /> : themePref === "light" ? <Sun size={18} strokeWidth={1.6} /> : <Monitor size={18} strokeWidth={1.6} />}
+          title={t("theme.toggle", { theme: t(`theme.${themePref}` as MessageKey) })}
+          onClick={() => setThemePref(nextThemePref(themePref))}
         />
         <RailButton
           icon={
