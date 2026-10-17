@@ -370,4 +370,11 @@ export const en = {
   "tabs.empty": "No file open",
   "topbar.root.tip": "Main file (compiled as the document root). Click to open it.",
   "topbar.search": "Go to file…",
+
+  // ─── Theme ──────────────────────────────────────────────────────
+  "theme.title": "Theme",
+  "theme.system": "System",
+  "theme.dark": "Dark",
+  "theme.light": "Light",
+  "theme.toggle": "Theme: {theme} (click to change)",
 } as const;

@@ -2,8 +2,9 @@
 // server, optional TURN relay and the extra-window helper.
 
 import { useEffect, useState } from "react";
-import { Check, PlusSquare } from "lucide-react";
+import { Check, Monitor, Moon, PlusSquare, Sun } from "lucide-react";
 import { LOCALES, useI18n } from "../i18n";
+import { setThemePref, useTheme, type ThemePref } from "../services/theme";
 import {
   SIGNALING_OVERRIDE_KEY,
   TURN_OVERRIDE_KEY,
@@ -36,6 +37,7 @@ const INPUT = "w-full bg-mk-bg border border-mk-bg3 focus:border-mk-yellow px-2 
 
 export default function ProfilePanel({ currentUser, onUserChange, onNewWindow }: ProfilePanelProps) {
   const { t, locale, setLocale } = useI18n();
+  const [themePref] = useTheme();
   const [name, setName] = useState(currentUser.name);
   const [signaling, setSignaling] = useState(() => {
     try {
@@ -122,6 +124,31 @@ export default function ProfilePanel({ currentUser, onUserChange, onNewWindow }:
               }`}
             >
               {l.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className={SECTION}>
+        <span className={LABEL}>{t("theme.title")}</span>
+        <div className="flex">
+          {(
+            [
+              ["system", <Monitor size={13} key="s" />],
+              ["dark", <Moon size={13} key="d" />],
+              ["light", <Sun size={13} key="l" />],
+            ] as [ThemePref, React.ReactNode][]
+          ).map(([value, icon]) => (
+            <button
+              key={value}
+              onClick={() => setThemePref(value)}
+              aria-pressed={themePref === value}
+              className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 border border-mk-bg3 cursor-pointer transition-colors ${
+                themePref === value ? "bg-mk-bg3 text-mk-fg" : "bg-mk-bg text-mk-fg3 hover:text-mk-fg"
+              }`}
+            >
+              {icon}
+              {t(`theme.${value}`)}
             </button>
           ))}
         </div>

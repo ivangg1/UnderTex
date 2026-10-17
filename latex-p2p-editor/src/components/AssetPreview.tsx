@@ -97,7 +97,7 @@ export default function AssetPreview({ projectPath, path, version = 0 }: AssetPr
         {info && <span className="text-mk-fg4">· {info}</span>}
         <span className="ml-auto text-mk-fg4">{t("preview.asset.readOnly")}</span>
       </div>
-      <div className="flex-1 min-h-0 overflow-auto p-6 flex flex-col items-center gap-4 bg-[#19181a]">
+      <div className="flex-1 min-h-0 overflow-auto p-6 flex flex-col items-center gap-4 bg-mk-canvas">
         {loading && <Loader2 size={18} className="animate-spin text-mk-fg3" />}
         {error && <div className="text-mk-red text-xs">{t("preview.asset.error", { message: error })}</div>}
         {url && (
@@ -105,7 +105,7 @@ export default function AssetPreview({ projectPath, path, version = 0 }: AssetPr
             src={url}
             alt={path}
             className="max-w-full h-auto object-contain"
-            style={{ backgroundImage: "repeating-conic-gradient(#2d2a2e 0 25%, #353236 0 50%)", backgroundSize: "16px 16px" }}
+            style={{ backgroundImage: "repeating-conic-gradient(var(--color-mk-bg) 0 25%, var(--color-mk-bg3) 0 50%)", backgroundSize: "16px 16px" }}
           />
         )}
         <div ref={pagesRef} className="flex flex-col items-center gap-4 w-full" />

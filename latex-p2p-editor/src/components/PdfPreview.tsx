@@ -366,7 +366,7 @@ export default function PdfPreview({
       )}
 
       {/* Pages */}
-      <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto bg-[#1e1c1f]">
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto bg-mk-canvas">
         {doc && pageDims.length > 0 ? (
           <div className="flex flex-col items-center gap-4 py-4">
             {pageDims.map((dims, index) => {

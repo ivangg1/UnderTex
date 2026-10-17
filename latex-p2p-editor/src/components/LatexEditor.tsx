@@ -7,7 +7,7 @@
 
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import type { UndoManager } from "yjs";
-import { EditorState } from "@codemirror/state";
+import { Compartment, EditorState } from "@codemirror/state";
 import {
   EditorView,
   keymap,
@@ -26,14 +26,17 @@ import {
   bracketMatching,
   indentOnInput,
 } from "@codemirror/language";
-import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
+import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap, startCompletion } from "@codemirror/autocomplete";
 import { search, searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { tags } from "@lezer/highlight";
-import { latex } from "codemirror-lang-latex";
+import { latex, latexCompletionSource } from "codemirror-lang-latex";
 import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
 import type * as Y from "yjs";
 import type { Awareness } from "y-protocols/awareness";
 import { activeChapter } from "../services/chapters";
+import { findDefinition, type Definition, type ProjectIndex } from "../services/references";
+import { referenceCompletionSource } from "../services/referenceCompletion";
+import type { ResolvedTheme } from "../services/theme";
 
 export interface LatexEditorHandle {
   /** Scrolls to and selects the given 1-based line. */
@@ -59,69 +62,81 @@ interface LatexEditorProps {
   onCursorLine?: (line: number) => void;
   /** Cursor offset when the editor unmounts (leaving the tab). */
   onLeave?: (anchor: number) => void;
+  theme?: ResolvedTheme;
+  /** Project-wide labels, citations and files (smart completion, go to definition). */
+  getIndex?: () => ProjectIndex;
+  rootFile?: string;
+  /** F12 on a \ref / \cite / \input: open where it is defined. */
+  onGoToDefinition?: (definition: Definition) => void;
 }
 
 /** Monokai Pro highlight style tuned for LaTeX. */
 const latexHighlightStyle = HighlightStyle.define([
-  { tag: tags.keyword, color: "#ff6188" },
-  { tag: [tags.controlKeyword, tags.definitionKeyword], color: "#ff6188" },
-  { tag: [tags.function(tags.variableName), tags.macroName], color: "#a9dc76" },
-  { tag: [tags.typeName, tags.className, tags.labelName], color: "#78dce8" },
-  { tag: [tags.string, tags.special(tags.string)], color: "#ffd866" },
-  { tag: tags.comment, color: "#727072", fontStyle: "italic" },
-  { tag: [tags.number, tags.atom, tags.bool], color: "#ab9df2" },
-  { tag: [tags.operator, tags.punctuation], color: "#fc9867" },
-  { tag: [tags.bracket, tags.paren, tags.brace], color: "#c1c0c0" },
-  { tag: tags.heading, color: "#ffd866", fontWeight: "bold" },
+  { tag: tags.keyword, color: "var(--color-mk-red)" },
+  { tag: [tags.controlKeyword, tags.definitionKeyword], color: "var(--color-mk-red)" },
+  { tag: [tags.function(tags.variableName), tags.macroName], color: "var(--color-mk-green)" },
+  { tag: [tags.typeName, tags.className, tags.labelName], color: "var(--color-mk-blue)" },
+  { tag: [tags.string, tags.special(tags.string)], color: "var(--color-mk-yellow)" },
+  { tag: tags.comment, color: "var(--color-mk-fg4)", fontStyle: "italic" },
+  { tag: [tags.number, tags.atom, tags.bool], color: "var(--color-mk-purple)" },
+  { tag: [tags.operator, tags.punctuation], color: "var(--color-mk-orange)" },
+  { tag: [tags.bracket, tags.paren, tags.brace], color: "var(--color-mk-fg2)" },
+  { tag: tags.heading, color: "var(--color-mk-yellow)", fontWeight: "bold" },
   { tag: tags.emphasis, fontStyle: "italic" },
   { tag: tags.strong, fontWeight: "bold" },
-  { tag: tags.invalid, color: "#ff6188", textDecoration: "underline wavy" },
+  { tag: tags.invalid, color: "var(--color-mk-red)", textDecoration: "underline wavy" },
 ]);
 
-const editorTheme = EditorView.theme(
+const editorThemeSpec: Parameters<typeof EditorView.theme>[0] = (
   {
-    "&": { height: "100%", fontSize: "13.5px", backgroundColor: "#2d2a2e", color: "#fcfcfa" },
+    "&": { height: "100%", fontSize: "13.5px", backgroundColor: "var(--color-mk-bg)", color: "var(--color-mk-fg)" },
     ".cm-scroller": {
       fontFamily: "'JetBrains Mono', 'SF Mono', 'Fira Code', Menlo, Consolas, monospace",
       lineHeight: "1.6",
     },
-    ".cm-content": { caretColor: "#fcfcfa", padding: "10px 0" },
-    "&.cm-focused .cm-cursor": { borderLeftColor: "#fcfcfa" },
+    ".cm-content": { caretColor: "var(--color-mk-fg)", padding: "10px 0" },
+    "&.cm-focused .cm-cursor": { borderLeftColor: "var(--color-mk-fg)" },
     "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection": {
-      backgroundColor: "#5b595c !important",
+      backgroundColor: "var(--color-mk-bg4) !important",
     },
-    ".cm-activeLine": { backgroundColor: "#35333666" },
-    ".cm-gutters": { backgroundColor: "#2d2a2e", color: "#5b595c", border: "none", paddingRight: "6px" },
-    ".cm-activeLineGutter": { backgroundColor: "transparent", color: "#c1c0c0" },
-    ".cm-selectionMatch": { backgroundColor: "#5b595c80" },
-    ".cm-matchingBracket": { backgroundColor: "#5b595c", outline: "1px solid #939293" },
-    ".cm-tooltip": { backgroundColor: "#221f22", border: "1px solid #403e41", color: "#fcfcfa" },
+    ".cm-activeLine": { backgroundColor: "var(--color-mk-line)" },
+    ".cm-gutters": { backgroundColor: "var(--color-mk-bg)", color: "var(--color-mk-bg4)", border: "none", paddingRight: "6px" },
+    ".cm-activeLineGutter": { backgroundColor: "transparent", color: "var(--color-mk-fg2)" },
+    ".cm-selectionMatch": { backgroundColor: "color-mix(in srgb, var(--color-mk-bg4) 50%, transparent)" },
+    ".cm-matchingBracket": { backgroundColor: "var(--color-mk-bg4)", outline: "1px solid var(--color-mk-fg3)" },
+    ".cm-tooltip": { backgroundColor: "var(--color-mk-bg2)", border: "1px solid var(--color-mk-bg3)", color: "var(--color-mk-fg)" },
     ".cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected]": {
-      backgroundColor: "#403e41",
-      color: "#fcfcfa",
+      backgroundColor: "var(--color-mk-bg3)",
+      color: "var(--color-mk-fg)",
     },
-    ".cm-panels": { backgroundColor: "#221f22", color: "#fcfcfa" },
-    ".cm-panels.cm-panels-top": { borderBottom: "1px solid #403e41" },
-    ".cm-searchMatch": { backgroundColor: "#ffd86640", outline: "1px solid #ffd86680" },
-    ".cm-searchMatch.cm-searchMatch-selected": { backgroundColor: "#fc986780" },
+    ".cm-panels": { backgroundColor: "var(--color-mk-bg2)", color: "var(--color-mk-fg)" },
+    ".cm-panels.cm-panels-top": { borderBottom: "1px solid var(--color-mk-bg3)" },
+    ".cm-searchMatch": { backgroundColor: "color-mix(in srgb, var(--color-mk-yellow) 25%, transparent)", outline: "1px solid color-mix(in srgb, var(--color-mk-yellow) 50%, transparent)" },
+    ".cm-searchMatch.cm-searchMatch-selected": { backgroundColor: "color-mix(in srgb, var(--color-mk-orange) 50%, transparent)" },
     ".cm-panel input, .cm-panel button": {
-      backgroundColor: "#2d2a2e",
-      color: "#fcfcfa",
-      border: "1px solid #403e41",
+      backgroundColor: "var(--color-mk-bg)",
+      color: "var(--color-mk-fg)",
+      border: "1px solid var(--color-mk-bg3)",
       borderRadius: "0",
     },
-  },
-  { dark: true }
+  }
 );
 
+/** Colors come from the app's CSS variables; `dark` only picks CodeMirror's base styles. */
+const editorThemes = {
+  dark: EditorView.theme(editorThemeSpec, { dark: true }),
+  light: EditorView.theme(editorThemeSpec, { dark: false }),
+};
+
 const LatexEditor = forwardRef<LatexEditorHandle, LatexEditorProps>(function LatexEditor(
-  { ytext, awareness, undoManager, initialAnchor, onCursorLine, onLeave },
+  { ytext, awareness, undoManager, initialAnchor, onCursorLine, onLeave, theme = "dark", getIndex, rootFile, onGoToDefinition },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
-  const callbacks = useRef({ onCursorLine, onLeave, initialAnchor });
-  callbacks.current = { onCursorLine, onLeave, initialAnchor };
+  const themeCompartment = useRef(new Compartment());
+  const callbacks = useRef({ onCursorLine, onLeave, initialAnchor, getIndex, rootFile, onGoToDefinition, theme });
+  callbacks.current = { onCursorLine, onLeave, initialAnchor, getIndex, rootFile, onGoToDefinition, theme };
 
   useImperativeHandle(
     ref,
@@ -156,8 +171,27 @@ const LatexEditor = forwardRef<LatexEditorHandle, LatexEditorProps>(function Lat
   );
 
   useEffect(() => {
+    viewRef.current?.dispatch({ effects: themeCompartment.current.reconfigure(editorThemes[theme]) });
+  }, [theme]);
+
+  useEffect(() => {
     const parent = containerRef.current;
     if (!parent) return;
+
+    const referenceSource = referenceCompletionSource(
+      () => callbacks.current.getIndex?.() ?? null,
+      () => callbacks.current.rootFile ?? "main.tex"
+    );
+    const goToDefinition = (target: EditorView): boolean => {
+      const index = callbacks.current.getIndex?.();
+      const go = callbacks.current.onGoToDefinition;
+      if (!index || !go) return false;
+      const head = target.state.selection.main.head;
+      const line = target.state.doc.lineAt(head);
+      const def = findDefinition(line.text, head - line.from, index, callbacks.current.rootFile ?? "main.tex");
+      if (def) go(def);
+      return true;
+    };
 
     const state = EditorState.create({
       doc: ytext.toString(),
@@ -172,11 +206,22 @@ const LatexEditor = forwardRef<LatexEditorHandle, LatexEditorProps>(function Lat
         indentOnInput(),
         bracketMatching(),
         closeBrackets(),
-        autocompletion(),
+        // One completion config: project references first, then LaTeX commands.
+        autocompletion({ override: [referenceSource, latexCompletionSource(true)], icons: true }),
+        // Open the list as soon as a reference argument starts ("{" or "," typed).
+        EditorView.updateListener.of((update) => {
+          if (!update.docChanged || !update.transactions.some((tr) => tr.isUserEvent("input.type"))) return;
+          let typed = "";
+          update.changes.iterChanges((_fa, _ta, _fb, _tb, inserted) => {
+            typed = inserted.toString();
+          });
+          if (typed.startsWith("{") || typed === ",") setTimeout(() => startCompletion(update.view), 0);
+        }),
         search({ top: true }),
         highlightSelectionMatches(),
         EditorView.lineWrapping,
         keymap.of([
+          { key: "F12", run: goToDefinition },
           ...yUndoManagerKeymap,
           ...closeBracketsKeymap,
           ...searchKeymap,
@@ -184,7 +229,7 @@ const LatexEditor = forwardRef<LatexEditorHandle, LatexEditorProps>(function Lat
           ...defaultKeymap,
           indentWithTab,
         ]),
-        latex({ enableLinting: false, enableTooltips: false }),
+        latex({ enableLinting: false, enableTooltips: false, enableAutocomplete: false }),
         syntaxHighlighting(latexHighlightStyle, { fallback: true }),
         yCollab(ytext, awareness, undoManager ? { undoManager } : undefined),
         EditorView.updateListener.of((update) => {
@@ -193,7 +238,7 @@ const LatexEditor = forwardRef<LatexEditorHandle, LatexEditorProps>(function Lat
             callbacks.current.onCursorLine?.(st.doc.lineAt(st.selection.main.head).number);
           }
         }),
-        editorTheme,
+        themeCompartment.current.of(editorThemes[callbacks.current.theme]),
       ],
     });
 

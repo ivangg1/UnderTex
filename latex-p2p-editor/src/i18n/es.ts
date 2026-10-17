@@ -372,4 +372,11 @@ export const es: Record<keyof typeof en, string> = {
   "tabs.empty": "Ningún archivo abierto",
   "topbar.root.tip": "Archivo principal (raíz del documento que se compila). Haz clic para abrirlo.",
   "topbar.search": "Ir a archivo…",
+
+  // ─── Theme ──────────────────────────────────────────────────────
+  "theme.title": "Tema",
+  "theme.system": "Sistema",
+  "theme.dark": "Oscuro",
+  "theme.light": "Claro",
+  "theme.toggle": "Tema: {theme} (clic para cambiar)",
 };
