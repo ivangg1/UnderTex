@@ -269,6 +269,183 @@ pub fn save_crdt(project_path: &str, crdt_binary: &[u8]) -> Result<bool, String>
     write_atomic(&state_path, crdt_binary).map_err(|e| format!("Failed to save crdt_state.bin: {e}"))
 }
 
+/// A node in the project file tree.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ProjectNode {
+    pub name: String,
+    /// Path relative to the project root, using forward slashes (`/`).
+    pub path: String,
+    pub is_dir: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub children: Option<Vec<ProjectNode>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+}
+
+/// File extensions that are intermediate/build artifacts, not user project files.
+const BUILD_ARTIFACT_EXTENSIONS: &[&str] = &[
+    "aux", "log", "tmp", "out", "toc", "lof", "lot", "fls", "fdb_latexmk", "synctex.gz",
+    "xdv", "nav", "snm", "bcf", "run.xml", "blg", "idx", "ilg", "ind",
+];
+
+pub fn is_artifact_or_ignored(name: &str) -> bool {
+    if name.starts_with('.') {
+        return true;
+    }
+    let lower = name.to_lowercase();
+    for ext in BUILD_ARTIFACT_EXTENSIONS {
+        if lower.ends_with(&format!(".{ext}")) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Recursively builds the file tree for `project_path`, skipping hidden files/directories,
+/// ignored build directories (`node_modules`, `target`, etc.), and intermediate build artifacts.
+pub fn list_project_files(project_path: &str) -> Result<Vec<ProjectNode>, String> {
+    let root = PathBuf::from(project_path);
+    if !root.is_dir() {
+        return Err(format!("Not a directory: {project_path}"));
+    }
+    walk_tree(&root, &root, 0)
+}
+
+fn walk_tree(root: &Path, current_dir: &Path, depth: usize) -> Result<Vec<ProjectNode>, String> {
+    if depth > 10 {
+        return Ok(Vec::new());
+    }
+    let mut nodes = Vec::new();
+    let entries = fs::read_dir(current_dir)
+        .map_err(|e| format!("Failed to read directory {}: {e}", current_dir.display()))?;
+
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') {
+            continue;
+        }
+        let path = entry.path();
+        let rel_path = match path.strip_prefix(root) {
+            Ok(p) => p.to_string_lossy().replace('\\', "/"),
+            Err(_) => continue,
+        };
+
+        if path.is_dir() {
+            if SKIPPED_DIRS.contains(&name.as_str()) {
+                continue;
+            }
+            let children = walk_tree(root, &path, depth + 1)?;
+            nodes.push(ProjectNode {
+                name,
+                path: rel_path,
+                is_dir: true,
+                children: Some(children),
+                size: None,
+            });
+        } else if path.is_file() {
+            if is_artifact_or_ignored(&name) {
+                continue;
+            }
+            let size = entry.metadata().ok().map(|m| m.len());
+            nodes.push(ProjectNode {
+                name,
+                path: rel_path,
+                is_dir: false,
+                children: None,
+                size,
+            });
+        }
+    }
+
+    // Folders first (alphabetical), then files (alphabetical)
+    nodes.sort_by(|a, b| {
+        match (a.is_dir, b.is_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        }
+    });
+
+    Ok(nodes)
+}
+
+/// Safely read an arbitrary text file within the project.
+pub fn read_project_file(project_path: &str, rel_path: &str) -> Result<String, String> {
+    let dir = PathBuf::from(project_path);
+    let target = resolve_inside(&dir, rel_path)?;
+    fs::read_to_string(&target).map_err(|e| format!("Failed to read {rel_path}: {e}"))
+}
+
+/// Safely write/save an arbitrary file within the project atomically.
+pub fn save_project_file(project_path: &str, rel_path: &str, content: &str) -> Result<bool, String> {
+    let dir = PathBuf::from(project_path);
+    let target = resolve_inside(&dir, rel_path)?;
+    write_atomic(&target, content.as_bytes()).map_err(|e| format!("Failed to save {rel_path}: {e}"))
+}
+
+/// Safely create a new file or directory inside the project.
+pub fn create_project_node(project_path: &str, rel_path: &str, is_dir: bool) -> Result<(), String> {
+    let dir = PathBuf::from(project_path);
+    let target = resolve_inside(&dir, rel_path)?;
+    if target.exists() {
+        return Err(format!("'{rel_path}' already exists"));
+    }
+    if is_dir {
+        fs::create_dir_all(&target).map_err(|e| format!("Failed to create folder {rel_path}: {e}"))?;
+    } else {
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("Failed to create parent directory: {e}"))?;
+        }
+        let initial_content = if rel_path.to_lowercase().ends_with(".tex") {
+            "\\section{}\n"
+        } else {
+            ""
+        };
+        write_atomic(&target, initial_content.as_bytes())
+            .map_err(|e| format!("Failed to create file {rel_path}: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Safely delete a file or directory within the project. Rejects deleting the project root itself.
+pub fn delete_project_node(project_path: &str, rel_path: &str) -> Result<(), String> {
+    let dir = PathBuf::from(project_path);
+    let target = resolve_inside(&dir, rel_path)?;
+    // Protection: never delete the root project directory itself
+    if target == dir {
+        return Err("Cannot delete the project root directory".to_string());
+    }
+    if !target.exists() {
+        return Err(format!("'{rel_path}' does not exist"));
+    }
+    if target.is_dir() {
+        fs::remove_dir_all(&target).map_err(|e| format!("Failed to delete folder {rel_path}: {e}"))?;
+    } else {
+        fs::remove_file(&target).map_err(|e| format!("Failed to delete file {rel_path}: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Safely rename a file or directory within the project.
+pub fn rename_project_node(project_path: &str, old_rel_path: &str, new_rel_path: &str) -> Result<(), String> {
+    let dir = PathBuf::from(project_path);
+    let old_target = resolve_inside(&dir, old_rel_path)?;
+    let new_target = resolve_inside(&dir, new_rel_path)?;
+    if old_target == dir || new_target == dir {
+        return Err("Cannot rename the project root directory".to_string());
+    }
+    if !old_target.exists() {
+        return Err(format!("'{old_rel_path}' does not exist"));
+    }
+    if new_target.exists() {
+        return Err(format!("'{new_rel_path}' already exists"));
+    }
+    if let Some(parent) = new_target.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create parent directory: {e}"))?;
+    }
+    fs::rename(&old_target, &new_target).map_err(|e| format!("Failed to rename {old_rel_path} to {new_rel_path}: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,6 +619,119 @@ mod tests {
             .filter(|n| n.ends_with(".tmp"))
             .collect();
         assert!(leftovers.is_empty(), "temp files left behind: {leftovers:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_project_files_recurses_and_filters_artifacts_and_hidden() {
+        let dir = temp_project("tree");
+        let dir_str = dir.to_str().unwrap();
+
+        // Create structure:
+        // main.tex
+        // chapters/
+        //   ch1.tex
+        //   sub/
+        //     deep.tex
+        // figures/
+        //   plot.png
+        // references.bib
+        // .git/ (should be ignored)
+        // .texcollab/ (should be ignored)
+        // build.log (should be ignored)
+        // temp.aux (should be ignored)
+        fs::write(dir.join("main.tex"), "\\documentclass{article}").unwrap();
+        fs::create_dir_all(dir.join("chapters").join("sub")).unwrap();
+        fs::write(dir.join("chapters").join("ch1.tex"), "\\section{1}").unwrap();
+        fs::write(dir.join("chapters").join("sub").join("deep.tex"), "\\subsection{Deep}").unwrap();
+        fs::create_dir_all(dir.join("figures")).unwrap();
+        fs::write(dir.join("figures").join("plot.png"), b"pngdata").unwrap();
+        fs::write(dir.join("references.bib"), "@article{...}").unwrap();
+        fs::create_dir_all(dir.join(".git")).unwrap();
+        fs::write(dir.join(".git").join("config"), "git config").unwrap();
+        fs::create_dir_all(dir.join(".texcollab")).unwrap();
+        fs::write(dir.join(".texcollab").join("room.json"), "{}").unwrap();
+        fs::write(dir.join("build.log"), "latex log").unwrap();
+        fs::write(dir.join("main.aux"), "aux").unwrap();
+
+        let tree = list_project_files(dir_str).unwrap();
+
+        // Verify root level: folders chapters, figures first, then main.tex, references.bib
+        let names: Vec<_> = tree.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, vec!["chapters", "figures", "main.tex", "references.bib"]);
+
+        // Verify chapters directory
+        let chapters_node = tree.iter().find(|n| n.name == "chapters").unwrap();
+        assert!(chapters_node.is_dir);
+        let ch_children = chapters_node.children.as_ref().unwrap();
+        let ch_names: Vec<_> = ch_children.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(ch_names, vec!["sub", "ch1.tex"]);
+
+        let sub_node = ch_children.iter().find(|n| n.name == "sub").unwrap();
+        let sub_children = sub_node.children.as_ref().unwrap();
+        assert_eq!(sub_children.len(), 1);
+        assert_eq!(sub_children[0].name, "deep.tex");
+        assert_eq!(sub_children[0].path, "chapters/sub/deep.tex");
+
+        // Verify figures
+        let figures_node = tree.iter().find(|n| n.name == "figures").unwrap();
+        let fig_children = figures_node.children.as_ref().unwrap();
+        assert_eq!(fig_children.len(), 1);
+        assert_eq!(fig_children[0].name, "plot.png");
+        assert_eq!(fig_children[0].path, "figures/plot.png");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn project_file_read_write_create_rename_delete() {
+        let dir = temp_project("file_ops");
+        let dir_str = dir.to_str().unwrap();
+
+        // Create directory
+        create_project_node(dir_str, "notes", true).unwrap();
+        assert!(dir.join("notes").is_dir());
+
+        // Create file inside notes
+        create_project_node(dir_str, "notes/todo.txt", false).unwrap();
+        assert!(dir.join("notes/todo.txt").is_file());
+
+        // Save content
+        assert!(save_project_file(dir_str, "notes/todo.txt", "task 1").unwrap());
+        // Read content
+        assert_eq!(read_project_file(dir_str, "notes/todo.txt").unwrap(), "task 1");
+
+        // Rename file
+        rename_project_node(dir_str, "notes/todo.txt", "notes/done.txt").unwrap();
+        assert!(!dir.join("notes/todo.txt").exists());
+        assert!(dir.join("notes/done.txt").exists());
+        assert_eq!(read_project_file(dir_str, "notes/done.txt").unwrap(), "task 1");
+
+        // Delete file
+        delete_project_node(dir_str, "notes/done.txt").unwrap();
+        assert!(!dir.join("notes/done.txt").exists());
+
+        // Delete folder
+        delete_project_node(dir_str, "notes").unwrap();
+        assert!(!dir.join("notes").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn project_file_operations_reject_traversal_and_root_destruction() {
+        let dir = temp_project("security");
+        let dir_str = dir.to_str().unwrap();
+
+        assert!(create_project_node(dir_str, "../outside.txt", false).is_err());
+        assert!(read_project_file(dir_str, "../outside.txt").is_err());
+        assert!(save_project_file(dir_str, "../outside.txt", "x").is_err());
+        assert!(rename_project_node(dir_str, "a.tex", "../b.tex").is_err());
+        assert!(delete_project_node(dir_str, "../outside.txt").is_err());
+
+        // Cannot delete root
+        assert!(delete_project_node(dir_str, ".").is_err());
+
         let _ = fs::remove_dir_all(&dir);
     }
 }

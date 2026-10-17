@@ -14,6 +14,7 @@ import HistoryPanel from "./components/HistoryPanel";
 import DiffView from "./components/DiffView";
 import LatexEditor, { type LatexEditorHandle } from "./components/LatexEditor";
 import PdfPreview, { type CompileSummary } from "./components/PdfPreview";
+import FileTree, { isEditableFile } from "./components/FileTree";
 import {
   pickProjectFolder,
   pickParentFolder,
@@ -31,10 +32,16 @@ import {
   historySave,
   historyRead,
   historyDelete,
+  listProjectFiles,
+  readProjectFile,
+  createProjectNode,
+  deleteProjectNode,
+  renameProjectNode,
   type BuildOptions,
   type CompileOutput,
   type CompilerInfo,
   type SnapshotMeta,
+  type ProjectNode,
 } from "./services/tauriBridge";
 import { findIncludes } from "./services/chapters";
 import {
@@ -122,6 +129,7 @@ function errorMessage(err: unknown): string {
 interface ProjectInfo {
   path: string;
   mainFile: string;
+  activeFile: string;
   texFiles: string[];
 }
 
@@ -176,11 +184,21 @@ function App() {
 
   // ─── Project & session ──────────────────────────────────────────
   const [project, setProject] = useState<ProjectInfo | null>(null);
+  const [fileTree, setFileTree] = useState<ProjectNode[]>([]);
+  const [showFileTree, setShowFileTree] = useState<boolean>(() => readFlag("latex_show_file_tree", true));
   const [session, setSession] = useState<EditorSession | null>(null);
   const [banner, setBanner] = useState<Banner | null>(null);
   const [recents, setRecents] = useState<RecentProject[]>(() => readRecents());
   const [activePanel, setActivePanel] = useState<PanelId | null>(null);
   const [defaultParent, setDefaultParent] = useState<string | null>(null);
+
+  const handleToggleFileTree = useCallback(() => {
+    setShowFileTree((prev) => {
+      const next = !prev;
+      writeFlag("latex_show_file_tree", next);
+      return next;
+    });
+  }, []);
 
   // ─── Collaboration ──────────────────────────────────────────────
   const [currentUser, setCurrentUser] = useState<CollabUser>(getSavedUser);
@@ -264,16 +282,27 @@ function App() {
       compileQueuedRef.current = { auto: auto && (compileQueuedRef.current?.auto ?? true) };
       return null;
     }
-    const text = manager.getText();
+    await manager.flushSave();
+    let rootText: string;
+    if (current.activeFile === current.mainFile) {
+      rootText = manager.getText();
+    } else {
+      try {
+        rootText = await readProjectFile(current.path, current.mainFile);
+      } catch (err) {
+        console.error("Failed to read root file for compile:", err);
+        rootText = manager.getText();
+      }
+    }
     // The build mode only touches the build copy of the root file; Export asks for a plain build.
     const options: BuildOptions = opts.plain
       ? PLAIN_BUILD
       : resolveBuildOptions(
           opts.settings ?? buildSettingsRef.current,
-          findIncludes(text).map((c) => c.name),
+          findIncludes(rootText).map((c) => c.name),
           editorRef.current?.getActiveChapter() ?? null
         );
-    const key = buildKey(text, options);
+    const key = buildKey(rootText, options);
     // Automatic builds skip unchanged input (text + mode); a manual build always runs.
     if (auto && lastCompiledRef.current && lastCompiledRef.current.key === key && lastCompiledRef.current.success) {
       return null;
@@ -282,8 +311,7 @@ function App() {
     setIsCompiling(true);
     setCompileQuiet(auto);
     try {
-      await manager.flushSave();
-      const result = await compileLatex(current.path, current.mainFile, text, options);
+      const result = await compileLatex(current.path, current.mainFile, rootText, options);
       const parsed = parseLatexLog(result.logs);
       let pdfData: Uint8Array | null = null;
       if (result.pdf_path) {
@@ -329,6 +357,8 @@ function App() {
       }
     }
   }, []);
+
+  const handleCompile = useCallback(() => void runCompile(), [runCompile]);
 
   // Chapters (`\include`) of the root file, kept current for the scope control.
   useEffect(() => {
@@ -531,7 +561,12 @@ function App() {
       });
       managerRef.current = manager;
 
-      const info = { path: data.project_path, mainFile: data.main_file, texFiles: data.tex_files };
+      const info = {
+        path: data.project_path,
+        mainFile: data.main_file,
+        activeFile: data.main_file,
+        texFiles: data.tex_files,
+      };
       projectRef.current = info;
       setProject(info);
       setSession({
@@ -559,8 +594,169 @@ function App() {
       setActivePanel((p) => (p === "join" || p === "new" ? null : p));
       setRecents(addRecent({ path: data.project_path, mainFile: data.main_file }));
       void refreshSnapshots(data.project_path);
+      void refreshTree(data.project_path);
     },
     [recordSnapshot, refreshSnapshots]
+  );
+
+  const refreshTree = useCallback(async (projectPath: string) => {
+    try {
+      const nodes = await listProjectFiles(projectPath);
+      setFileTree(nodes);
+    } catch (err) {
+      console.error("Failed to list project files:", err);
+    }
+  }, []);
+
+  const handleSelectFile = useCallback(
+    async (relPath: string) => {
+      const current = projectRef.current;
+      if (!current || relPath === current.activeFile) return;
+      if (!isEditableFile(relPath)) return;
+
+      try {
+        if (managerRef.current) {
+          lastAutoSnapshotRef.current = 0;
+          await recordSnapshot();
+          await managerRef.current.dispose();
+          managerRef.current = null;
+        }
+
+        const isMain = relPath === current.mainFile;
+        let content: string;
+        let isCollab = false;
+        let roomId: string | null = null;
+        let crdtState: number[] | null = null;
+
+        if (isMain) {
+          const data = await readProject(current.path, relPath);
+          content = data.tex_content;
+          isCollab = data.is_collab;
+          roomId = data.room_id;
+          crdtState = data.crdt_state;
+        } else {
+          content = await readProjectFile(current.path, relPath);
+        }
+
+        const manager = new CollabManager({
+          projectPath: current.path,
+          mainFile: relPath,
+          isCollab,
+          roomId,
+          initialTexContent: content,
+          initialCrdtState: crdtState,
+          currentUser: currentUserRef.current,
+          callbacks: {
+            onModeChange: setMode,
+            onHostChange: setIsHost,
+            onPeersChange: setPeers,
+            onStatusChange: (status, diag) => {
+              setConnectionStatus(status);
+              setDiagnostics(diag);
+            },
+            onRoomIdChange: setRoomId,
+            onSaveStateChange: setSaveState,
+          },
+        });
+        managerRef.current = manager;
+
+        const next = { ...current, activeFile: relPath };
+        projectRef.current = next;
+        setProject(next);
+
+        setSession({
+          key: `${current.path}::${relPath}::${Date.now()}`,
+          ytext: manager.ytext,
+          awareness: manager.awareness,
+        });
+        setMode(manager.mode);
+        setRoomId(manager.roomId);
+        setIsHost(manager.isHost);
+        setPeers(manager.peers);
+        setConnectionStatus(manager.status);
+        setDiagnostics(manager.diagnostics);
+        setSaveState(manager.saveState);
+        lastAutoSnapshotRef.current = Date.now();
+      } catch (err) {
+        console.error("Failed to switch file:", err);
+        setBanner({ kind: "error", text: t("files.error.load", { message: errorMessage(err) }) });
+      }
+    },
+    [recordSnapshot, t]
+  );
+
+  const handleSetRootFile = useCallback((file: string) => {
+    const current = projectRef.current;
+    if (!current || file === current.mainFile) return;
+    const next = { ...current, mainFile: file };
+    projectRef.current = next;
+    setProject(next);
+  }, []);
+
+  const handleCreateNode = useCallback(
+    async (relPath: string, isDir: boolean) => {
+      const current = projectRef.current;
+      if (!current) return;
+      try {
+        await createProjectNode(current.path, relPath, isDir);
+        await refreshTree(current.path);
+        if (!isDir && isEditableFile(relPath)) {
+          await handleSelectFile(relPath);
+        }
+      } catch (err) {
+        console.error("Failed to create file/folder:", err);
+        setBanner({ kind: "error", text: t("files.error.create", { message: errorMessage(err) }) });
+        throw err;
+      }
+    },
+    [refreshTree, handleSelectFile, t]
+  );
+
+  const handleRenameNode = useCallback(
+    async (oldRelPath: string, newRelPath: string) => {
+      const current = projectRef.current;
+      if (!current) return;
+      try {
+        await renameProjectNode(current.path, oldRelPath, newRelPath);
+        const wasActive = current.activeFile === oldRelPath;
+        const wasMain = current.mainFile === oldRelPath;
+        const next = {
+          ...current,
+          activeFile: wasActive ? newRelPath : current.activeFile,
+          mainFile: wasMain ? newRelPath : current.mainFile,
+        };
+        projectRef.current = next;
+        setProject(next);
+        await refreshTree(current.path);
+        if (wasActive) {
+          await handleSelectFile(newRelPath);
+        }
+      } catch (err) {
+        console.error("Failed to rename file/folder:", err);
+        setBanner({ kind: "error", text: t("files.error.rename", { message: errorMessage(err) }) });
+        throw err;
+      }
+    },
+    [refreshTree, handleSelectFile, t]
+  );
+
+  const handleDeleteNode = useCallback(
+    async (relPath: string) => {
+      const current = projectRef.current;
+      if (!current) return;
+      try {
+        await deleteProjectNode(current.path, relPath);
+        await refreshTree(current.path);
+        if (current.activeFile === relPath) {
+          await handleSelectFile(current.mainFile);
+        }
+      } catch (err) {
+        console.error("Failed to delete file/folder:", err);
+        setBanner({ kind: "error", text: t("files.error.delete", { message: errorMessage(err) }) });
+        throw err;
+      }
+    },
+    [refreshTree, handleSelectFile, t]
   );
 
   const handleOpenFolder = useCallback(async () => {
@@ -860,6 +1056,8 @@ function App() {
         canExport={canExport}
         currentUser={currentUser}
         activePanel={effectivePanel}
+        showFileTree={showFileTree}
+        onToggleFileTree={handleToggleFileTree}
         onOpenFolder={handleOpenFolder}
         onTogglePanel={togglePanel}
         onStartCollab={handleStartCollab}
@@ -871,10 +1069,25 @@ function App() {
         onClosePanel={() => setActivePanel(null)}
       />
 
+      {/* File Tree panel when a project is open and visible */}
+      {project && session && showFileTree && (
+        <FileTree
+          nodes={fileTree}
+          activeFile={project.activeFile}
+          rootFile={project.mainFile}
+          onSelectFile={(path) => void handleSelectFile(path)}
+          onSetRootFile={handleSetRootFile}
+          onCreateNode={handleCreateNode}
+          onRenameNode={handleRenameNode}
+          onDeleteNode={handleDeleteNode}
+          onToggleCollapse={handleToggleFileTree}
+        />
+      )}
+
       <div className="flex-1 min-w-0 flex flex-col">
         <TopBar
           projectPath={project?.path ?? null}
-          mainFile={project?.mainFile ?? null}
+          mainFile={project?.activeFile ?? project?.mainFile ?? null}
           texFiles={project?.texFiles ?? []}
           mode={mode}
           isHost={isHost}
@@ -894,7 +1107,7 @@ function App() {
           onTogglePreamble={handleTogglePreamble}
           uiZoom={uiZoom}
           onResetZoom={() => setZoom(() => 1)}
-          onSelectMainFile={handleSelectMainFile}
+          onSelectMainFile={(f) => void handleSelectFile(f)}
         />
 
         {banner && (
@@ -933,7 +1146,9 @@ function App() {
                   isCompiling={isCompiling}
                   quietCompile={compileQuiet}
                   canExport={canExport}
-                  mainFile={project?.mainFile ?? null}
+                  hasProject={project !== null}
+                  onCompile={handleCompile}
+                  mainFile={project?.activeFile ?? project?.mainFile ?? null}
                   onJumpToLine={handleJumpToLine}
                   onExport={handleExport}
                   onPageCount={setPageCount}

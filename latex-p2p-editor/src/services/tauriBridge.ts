@@ -148,6 +148,58 @@ export async function createProject(parentDir: string, name: string, files: Proj
   return invoke<string>("create_project", { parentDir, name, files });
 }
 
+// ─── File Tree Operations ──────────────────────────────────────────
+
+export interface ProjectNode {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  children?: ProjectNode[];
+  size?: number;
+}
+
+/** Lists the recursive file tree of a project. */
+export async function listProjectFiles(projectPath: string): Promise<ProjectNode[]> {
+  return invoke<ProjectNode[]>("list_project_files", { projectPath });
+}
+
+/** Reads any text file inside a project. */
+export async function readProjectFile(projectPath: string, relPath: string): Promise<string> {
+  return invoke<string>("read_project_file", { projectPath, relPath });
+}
+
+/** Saves any file inside a project atomically. */
+export async function saveProjectFile(
+  projectPath: string,
+  relPath: string,
+  content: string
+): Promise<boolean> {
+  return invoke<boolean>("save_project_file", { projectPath, relPath, content });
+}
+
+/** Creates a file or directory inside a project. */
+export async function createProjectNode(
+  projectPath: string,
+  relPath: string,
+  isDir: boolean
+): Promise<void> {
+  return invoke<void>("create_project_node", { projectPath, relPath, isDir });
+}
+
+/** Deletes a file or directory inside a project. */
+export async function deleteProjectNode(projectPath: string, relPath: string): Promise<void> {
+  return invoke<void>("delete_project_node", { projectPath, relPath });
+}
+
+/** Renames a file or directory inside a project. */
+export async function renameProjectNode(
+  projectPath: string,
+  oldRelPath: string,
+  newRelPath: string
+): Promise<void> {
+  return invoke<void>("rename_project_node", { projectPath, oldRelPath, newRelPath });
+}
+
 // ─── Version history (app data dir, per project) ────────────────────
 
 export type SnapshotKind = "auto" | "manual";

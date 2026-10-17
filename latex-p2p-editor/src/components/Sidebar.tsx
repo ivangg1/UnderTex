@@ -7,6 +7,7 @@ import {
   Download,
   FilePlus,
   FolderOpen,
+  FolderTree,
   History,
   Languages,
   Loader2,
@@ -37,6 +38,8 @@ interface SidebarProps {
   canExport: boolean;
   currentUser: CollabUser;
   activePanel: PanelId | null;
+  showFileTree?: boolean;
+  onToggleFileTree?: () => void;
   onOpenFolder: () => void;
   onTogglePanel: (panel: PanelId) => void;
   onStartCollab: () => void;
@@ -89,6 +92,8 @@ export default function Sidebar({
   canExport,
   currentUser,
   activePanel,
+  showFileTree = true,
+  onToggleFileTree,
   onOpenFolder,
   onTogglePanel,
   onStartCollab,
@@ -121,6 +126,16 @@ export default function Sidebar({
           onClick={onOpenFolder}
           disabled={isCompiling}
         />
+        {hasProject && onToggleFileTree && (
+          <RailButton
+            icon={<FolderTree size={20} strokeWidth={1.75} />}
+            label={t("files.title")}
+            title={t("files.togglePanel")}
+            onClick={onToggleFileTree}
+            active={showFileTree}
+            disabled={isCompiling}
+          />
+        )}
         <RailButton
           icon={<LogIn size={20} strokeWidth={1.75} />}
           label={t("rail.join")}
