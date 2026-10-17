@@ -32,6 +32,14 @@ compile limits.
 - **On-demand P2P collaboration** (Google-Docs style, live cursors): press
   *Share* and either share the folder through your cloud **or** send the room ID
   (a teammate joins with *Join*, no shared folder needed).
+- **Project files travel with the room**: images, `.bib`, `.sty` and
+  `\input`/`\include` chapters are sent peer-to-peer over the same connection,
+  so a guest who joins by room ID with an empty folder can compile right away.
+  Received files live in a per-room cache in the app data dir (never in the
+  guest's folder); the guest's own files always win. The *Room* panel shows how
+  many files are available, what is being received and what only an offline
+  peer has, and a build that fails on such a file says so in plain words and
+  runs again when it arrives.
 - **Dynamic host election**: in a room only the peer with the lowest `clientID`
   writes to disk (this is what avoids Drive/iCloud *conflicted copies*). If the
   host drops, the next peer takes over within milliseconds and consolidates the
@@ -91,7 +99,7 @@ latex-p2p-editor/
 │   ├── components/
 │   │   ├── Sidebar.tsx         # action rail (new, open, join, share, build, auto, export, history) + flyout panel
 │   │   ├── TopBar.tsx          # project › root file, build scope / draft / preamble, mode, connection, save, compiler, last build
-│   │   ├── CollabPanel.tsx     # room: ID, invite, peers, connection diagnostics
+│   │   ├── CollabPanel.tsx     # room: ID, invite, peers, connection diagnostics, shared project files
 │   │   ├── JoinPanel.tsx       # join a room by ID
 │   │   ├── NewProjectPanel.tsx # name, template, location
 │   │   ├── HistoryPanel.tsx    # named versions + automatic snapshots
@@ -104,6 +112,7 @@ latex-p2p-editor/
 │   ├── i18n/                   # en/es dictionaries and the useI18n hook
 │   ├── services/
 │   │   ├── collabManager.ts    # Y.Doc, WebrtcProvider (encrypted signaling, STUN/TURN), awareness, host election, persistence
+│   │   ├── assetSync.ts        # project files over the room: manifest, chunked transfer, missing-file hints
 │   │   ├── crdtSeed.ts         # deterministic document seeding (prevents duplicated text)
 │   │   ├── latexLog.ts         # tectonic / pdflatex log parser
 │   │   ├── chapters.ts         # \include detection, chapter at the cursor
@@ -117,7 +126,8 @@ latex-p2p-editor/
 │   ├── lib.rs                  # Tauri commands, window close with flush
 │   ├── project.rs              # root .tex detection, .texcollab/, atomic saves, project scaffolding
 │   ├── history.rs              # version history store (app data dir)
-│   ├── compiler.rs             # engine discovery, build cache, timeout, chapter/draft/preamble rewrites
+│   ├── compiler.rs             # engine discovery, build cache (+ room asset cache), timeout, chapter/draft/preamble rewrites
+│   ├── assets.rs               # shareable file listing (SHA-256), chunk reads, per-room asset cache
 │   └── fsutil.rs               # write_atomic, path validation
 ├── examples/demo-project/      # sample project
 ├── examples/book-project/      # sample report with \include'd chapters (try "Active chapter")
@@ -148,6 +158,23 @@ latex-p2p-editor/
   are end-to-end encrypted with an AES-GCM key derived from `SHA-256("latexp2p:<roomID>")`.
   No third-party signaling relay can inspect document offers or candidates. For NAT traversal,
   Google STUN is used by default with optional TURN relay settings in the profile.
+- **Project files over the room** (`assetSync.ts`, `assets.rs`). Rust lists
+  the files a build may need (the build-cache set minus the root file, limited
+  to TeX, figure, font and data extensions so unrelated documents in a guest's
+  folder are never shared) with their SHA-256. Every peer publishes its own
+  files in a `Y.Map` manifest (`path → {hash, size, by}`); an entry whose
+  publisher is online is only replaced when the file changes locally during the
+  session, so a guest's stale copy never overrides the host's version. Peers
+  advertise in awareness which hashes they can send; a guest requests one file
+  at a time (`assetRequests`) and the lowest-`clientID` peer that has it writes
+  16 KiB chunks into `assetChunks`, keeping at most 8 per file in the document
+  and deleting them as the guest acknowledges. Every update stays far below
+  WebRTC's message size limit and a late joiner's initial sync stays small.
+  Received files are verified against their hash in Rust and stored under
+  `<app data>/asset-cache/room-<fnv64(room, folder)>/`; `compile` merges that
+  cache under the project folder in the build directory. Transfers are not
+  edits: they never trigger a `main.tex` save. The per-file limit is 20 MB
+  (`localStorage["latex_asset_max_mb"]` changes it).
 - **Self-contained build cache.** The user's folder is copied incrementally
   into the OS temp directory (`build-<fnv64(canonical_path)>`), intermediates
   stay there across builds, and the PDF is read back into RAM. The project
@@ -167,6 +194,13 @@ latex-p2p-editor/
 - **Single editable file.** The whole project is compiled (`\input`, `.bib`,
   figures) but the editor opens only the root file. The backend already handles
   arbitrary paths; multi-file tabbed editing is the next step.
+- **Shared files are read-only copies.** Chapters and `.bib` files reach guests
+  as files, not as collaborative text: edits to them propagate when the owner
+  saves them (the folder is rescanned every 4 s), and concurrent edits of the
+  same file on two machines are last-writer-wins. Files above the transfer
+  limit, and files only an offline peer has, must be copied by hand. The
+  transfer runs over the CRDT connection, so it is meant for typical thesis
+  assets (megabytes), not gigabytes.
 - **No incremental typesetting.** Every build re-typesets what it is asked to;
   auto build is debounced (2.5 s) and skipped when nothing changed. The
   shortcuts have limits of their own:
@@ -179,9 +213,9 @@ latex-p2p-editor/
 
 ```bash
 cd latex-p2p-editor
-npm test                 # vitest: CRDT seed, parser, CollabManager, encrypted signaling, STUN/TURN, i18n, templates, diffs, chapters, build modes
+npm test                 # vitest: CRDT seed, parser, CollabManager, asset sync protocol, encrypted signaling, STUN/TURN, i18n, templates, diffs, chapters, build modes
 npm run build            # tsc + vite
 
 cd src-tauri
-cargo test               # project, history, fsutil, compiler: includeonly/draft/preamble rewrites, format cache, and real chapter build
+cargo test               # project, history, fsutil, assets (listing, cache), compiler: room-cache merge, includeonly/draft/preamble rewrites, format cache, real chapter builds
 ```

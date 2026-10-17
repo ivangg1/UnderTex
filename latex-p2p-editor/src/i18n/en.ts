@@ -75,7 +75,8 @@ export const en = {
 
   // ─── Join room dialog ───────────────────────────────────────────
   "join.title": "Join a room",
-  "join.help": "Paste the room ID. You will pick a local folder where the project is saved whenever you are the Host.",
+  "join.help":
+    "Paste the room ID. You will pick a local folder where the project is saved whenever you are the Host (an empty one is fine: the room sends you the files the build needs).",
   "join.placeholder": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "join.submit": "Choose folder and join",
 
@@ -85,13 +86,35 @@ export const en = {
   "collab.inviteButton": "Copy invite message",
   "collab.copyId": "Copy ID",
   "collab.invite":
-    "Invite teammates: share the folder through your cloud (Drive, iCloud, OneDrive…) or send them this ID to use “Join”.",
+    "Invite teammates: send them this ID to use “Join”. Images, bibliography and chapters are sent to them through the room, no shared folder needed.",
   "collab.peers": "Peers ({count})",
   "collab.hostWrites": "Host · writes to disk",
   "collab.guestRam": "Guest · in memory",
   "collab.connection": "Connection",
   "collab.disconnect": "Disconnect and work solo",
   "collab.disconnect.tip": "Close WebRTC and return to solo mode",
+
+  // ─── Project files shared through the room ──────────────────────
+  "assets.title": "Project files",
+  "assets.summary": "{synced} of {total} available",
+  "assets.none": "No shared files yet (images, .bib, chapters…).",
+  "assets.receiving": "Receiving {path} · {percent}%",
+  "assets.sending": "Sending {count} file(s) to peers",
+  "assets.unavailable": "{count} file(s) are only on a peer that is offline.",
+  "assets.tooLarge": "{count} file(s) exceed the {mb} MB transfer limit; copy them into your folder.",
+  "assets.help":
+    "Images, bibliography and \\input chapters come from the peers that have them. Received files stay in the app's cache, never in your folder, and your own files always take precedence.",
+  "assets.state.downloading": "receiving",
+  "assets.state.queued": "queued",
+  "assets.state.unavailable": "offline",
+  "assets.state.tooLarge": "too large",
+  "assets.state.failed": "retrying",
+  "assets.hint.downloading": "“{path}” is still being received from the room. The build runs again as soon as it arrives.",
+  "assets.hint.queued": "“{path}” is waiting to be received from the room. The build runs again as soon as it arrives.",
+  "assets.hint.failed": "“{path}” could not be received yet and is being retried. The build runs again as soon as it arrives.",
+  "assets.hint.unavailable":
+    "“{path}” is shared in this room, but no peer that has it is online. It is downloaded as soon as the host reconnects.",
+  "assets.hint.tooLarge": "“{path}” is larger than the {mb} MB transfer limit. Copy it into your project folder to build.",
 
   // ─── Profile ────────────────────────────────────────────────────
   "profile.title": "Collaboration profile",

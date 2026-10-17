@@ -4,7 +4,25 @@ import {
   Awareness,
   encodeAwarenessUpdate,
   applyAwarenessUpdate,
+  removeAwarenessStates,
 } from "y-protocols/awareness";
+import * as sha256 from "lib0/hash/sha256";
+import * as buffer from "lib0/buffer";
+import {
+  ASSETS_KEY,
+  ASSET_CHUNKS_KEY,
+  ASSET_REQUESTS_KEY,
+  ASSET_CHUNK_BYTES,
+  ASSET_WINDOW,
+  ASSET_ORIGIN,
+  explainMissingAsset,
+  isAssetOnlyTransaction,
+  missingFilesInLog,
+  type AssetEntry,
+  type AssetIO,
+  type AssetSyncStatus,
+  type ManifestEntry,
+} from "../services/assetSync";
 import {
   CollabManager,
   computeConnectionStatus,
@@ -30,6 +48,11 @@ vi.mock("../services/tauriBridge", () => ({
   saveTexAtomic: vi.fn().mockResolvedValue(true),
   saveProjectState: vi.fn().mockResolvedValue(true),
   initCollabProject: vi.fn().mockResolvedValue({ room_id: "room-uuid-abc-123", main_file: "main.tex" }),
+  assetList: vi.fn().mockResolvedValue([]),
+  assetCacheList: vi.fn().mockResolvedValue([]),
+  assetReadChunk: vi.fn().mockResolvedValue(new Uint8Array()),
+  assetCacheStore: vi.fn(),
+  assetCachePrune: vi.fn().mockResolvedValue(0),
 }));
 
 const { MockWebrtcProvider, MockSignalingConn } = vi.hoisted(() => {
@@ -797,5 +820,292 @@ describe("ICE servers (STUN / TURN)", () => {
     expect(latestProvider().opts.peerOpts?.config?.iceServers).toBe(custom);
     expect(overridden.manager.diagnostics.turnConfigured).toBe(true);
     overridden.manager.destroy();
+  });
+});
+
+// ─── Project assets shared peer-to-peer ───────────────────────────
+
+const hex = (bytes: Uint8Array) => buffer.toHexString(sha256.digest(bytes));
+const enc = (text: string) => new TextEncoder().encode(text);
+
+/** In-memory project folder + room cache implementing the Rust commands' contract. */
+function fakeAssetIo(files: Record<string, Uint8Array>) {
+  const folder = new Map(Object.entries(files));
+  const cache = new Map<string, { entry: AssetEntry; bytes: Uint8Array }>();
+  const entry = (path: string, bytes: Uint8Array): AssetEntry => ({ path, size: bytes.length, hash: hex(bytes) });
+  const io: AssetIO = {
+    listLocal: vi.fn(async () => Array.from(folder, ([p, b]) => entry(p, b))),
+    listCache: vi.fn(async () => Array.from(cache.values(), (c) => c.entry)),
+    readChunk: vi.fn(async (path: string, offset: number, length: number) => {
+      const bytes = folder.get(path) ?? cache.get(path)?.bytes;
+      if (!bytes) throw new Error(`not found: ${path}`);
+      return bytes.slice(offset, offset + length);
+    }),
+    storeCache: vi.fn(async (e: AssetEntry, bytes: Uint8Array) => {
+      if (hex(bytes) !== e.hash) throw new Error("hash mismatch");
+      cache.set(e.path, { entry: entry(e.path, bytes), bytes: bytes.slice() });
+      return entry(e.path, bytes);
+    }),
+    pruneCache: vi.fn(async (keep: AssetEntry[]) => {
+      let removed = 0;
+      for (const [path, c] of Array.from(cache)) {
+        if (!keep.some((k) => k.path === path && k.hash === c.entry.hash)) {
+          cache.delete(path);
+          removed++;
+        }
+      }
+      return removed;
+    }),
+  };
+  return { io, folder, cache };
+}
+
+/** Live link between two peers: every doc and awareness update is forwarded (what y-webrtc does). */
+function link(a: CollabManager, b: CollabManager) {
+  const LINK = "link";
+  sync(a, b);
+  const forwardDoc = (to: CollabManager) => (update: Uint8Array, origin: unknown) => {
+    if (origin !== LINK) Y.applyUpdate(to.doc, update, LINK);
+  };
+  const forwardAwareness =
+    (from: CollabManager, to: CollabManager) =>
+    ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }, origin: unknown) => {
+      if (origin === LINK) return;
+      const changed = [...added, ...updated, ...removed];
+      applyAwarenessUpdate(to.awareness, encodeAwarenessUpdate(from.awareness, changed), LINK);
+    };
+  const ab = forwardDoc(b);
+  const ba = forwardDoc(a);
+  const awAB = forwardAwareness(a, b);
+  const awBA = forwardAwareness(b, a);
+  a.doc.on("update", ab);
+  b.doc.on("update", ba);
+  a.awareness.on("update", awAB);
+  b.awareness.on("update", awBA);
+  return () => {
+    a.doc.off("update", ab);
+    b.doc.off("update", ba);
+    a.awareness.off("update", awAB);
+    b.awareness.off("update", awBA);
+  };
+}
+
+async function until(cond: () => boolean, steps = 400) {
+  for (let i = 0; i < steps && !cond(); i++) await vi.advanceTimersByTimeAsync(5);
+  expect(cond()).toBe(true);
+}
+
+async function makeAssetPeer(name: string, io: AssetIO, extra: { assetMaxBytes?: number } = {}) {
+  const statuses: AssetSyncStatus[] = [];
+  const { manager } = makeManager({
+    isCollab: true,
+    roomId: "room-assets",
+    initialTexContent: "", // no seeding: any save would come from asset traffic
+    currentUser: { name, color: "#22c55e" },
+    options: { signaling: [], assetIo: io, assetScanMs: 1000, ...extra },
+    callbacks: { onAssetsChange: (s) => statuses.push(s) },
+  });
+  await tick(); // the provider is attached asynchronously
+  return { manager, statuses, provider: latestProvider() };
+}
+
+/** 200 KB "image": more chunks than the window. */
+const LOGO = Uint8Array.from({ length: 200_000 }, (_, i) => (i * 31 + 7) % 251);
+
+describe("Project assets shared through the room", () => {
+  it("publishes the host's asset list and streams a chunked file into the guest's cache", async () => {
+    const hostFiles = fakeAssetIo({
+      "imagenes/logoUMA.png": LOGO,
+      "chapters/intro.tex": enc("\\chapter{Intro}"),
+      "refs.bib": enc("@book{knuth}"),
+    });
+    const guestFiles = fakeAssetIo({});
+    const host = await makeAssetPeer("Host", hostFiles.io);
+    const guest = await makeAssetPeer("Guest", guestFiles.io);
+    // Never more than a window of chunks of one file in the document.
+    let maxChunks = 0;
+    const chunks = guest.manager.doc.getMap(ASSET_CHUNKS_KEY);
+    chunks.observe(() => (maxChunks = Math.max(maxChunks, chunks.size)));
+    const unlink = link(host.manager, guest.manager);
+    host.provider.markSynced();
+    guest.provider.markSynced();
+
+    // The manifest is in the shared doc: path → {hash, size, by}.
+    await until(() => guest.manager.doc.getMap<ManifestEntry>(ASSETS_KEY).size === 3);
+    expect(guest.manager.doc.getMap<ManifestEntry>(ASSETS_KEY).get("imagenes/logoUMA.png")).toEqual({
+      hash: hex(LOGO),
+      size: LOGO.length,
+      by: host.manager.doc.clientID,
+    });
+
+    await until(() => guest.manager.assets.synced === 3);
+    expect(guest.manager.assets).toMatchObject({ total: 3, synced: 3, missing: 0, downloading: null });
+    expect(guestFiles.cache.get("imagenes/logoUMA.png")?.bytes).toEqual(LOGO);
+    expect(new TextDecoder().decode(guestFiles.cache.get("chapters/intro.tex")?.bytes)).toBe("\\chapter{Intro}");
+    expect(hostFiles.io.readChunk).toHaveBeenCalledWith("imagenes/logoUMA.png", ASSET_CHUNK_BYTES, ASSET_CHUNK_BYTES);
+    expect(maxChunks).toBeGreaterThan(0);
+    expect(maxChunks).toBeLessThanOrEqual(ASSET_WINDOW);
+    // Progress was reported while the image was on its way.
+    expect(guest.statuses.some((s) => s.downloading?.path === "imagenes/logoUMA.png" && s.downloading.received > 0)).toBe(true);
+
+    // Transfers leave nothing behind and are not edits: no main.tex rewrite.
+    await vi.advanceTimersByTimeAsync(50);
+    expect(host.manager.doc.getMap(ASSET_CHUNKS_KEY).size).toBe(0);
+    expect(host.manager.doc.getMap(ASSET_REQUESTS_KEY).size).toBe(0);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(tauriBridge.saveProjectState).not.toHaveBeenCalled();
+    expect(host.manager.assets).toMatchObject({ total: 3, synced: 3, uploading: 0 });
+
+    unlink();
+    host.manager.destroy();
+    guest.manager.destroy();
+  });
+
+  it("keeps the guest's own files, skips files above the size cap and never overwrites the host's version", async () => {
+    const hostFiles = fakeAssetIo({ "refs.bib": enc("host bib"), "big.pdf": new Uint8Array(4096), "fig.png": enc("png") });
+    const guestFiles = fakeAssetIo({ "refs.bib": enc("guest's older bib") });
+    const host = await makeAssetPeer("Host", hostFiles.io);
+    const guest = await makeAssetPeer("Guest", guestFiles.io, { assetMaxBytes: 1024 });
+    const unlink = link(host.manager, guest.manager);
+    host.provider.markSynced();
+    // The guest's first scan happens after the room's manifest arrived.
+    await until(() => host.manager.doc.getMap(ASSETS_KEY).size === 3);
+    guest.provider.markSynced();
+
+    await until(() => guest.manager.assets.items.some((i) => i.path === "fig.png" && i.state === "cached"));
+    await vi.advanceTimersByTimeAsync(1500); // a rescan on both sides
+    const items = Object.fromEntries(guest.manager.assets.items.map((i) => [i.path, i.state]));
+    expect(items).toEqual({ "big.pdf": "tooLarge", "fig.png": "cached", "refs.bib": "local" });
+    expect(guest.manager.assets).toMatchObject({ total: 3, synced: 2, missing: 1, tooLarge: 1 });
+    expect(guestFiles.cache.has("refs.bib")).toBe(false);
+    expect(guestFiles.cache.has("big.pdf")).toBe(false);
+    // The room still advertises the host's bib, not the guest's stale copy.
+    expect(host.manager.doc.getMap<ManifestEntry>(ASSETS_KEY).get("refs.bib")?.hash).toBe(hex(enc("host bib")));
+
+    unlink();
+    host.manager.destroy();
+    guest.manager.destroy();
+  });
+
+  it("re-downloads a file the host changed and prunes one the host deleted", async () => {
+    const hostFiles = fakeAssetIo({ "fig.png": enc("v1"), "old.tex": enc("old") });
+    const guestFiles = fakeAssetIo({});
+    const host = await makeAssetPeer("Host", hostFiles.io);
+    const guest = await makeAssetPeer("Guest", guestFiles.io);
+    const unlink = link(host.manager, guest.manager);
+    host.provider.markSynced();
+    guest.provider.markSynced();
+    await until(() => guest.manager.assets.synced === 2);
+
+    hostFiles.folder.set("fig.png", enc("v2, edited by the host"));
+    hostFiles.folder.delete("old.tex");
+    await until(() => new TextDecoder().decode(guestFiles.cache.get("fig.png")?.bytes) === "v2, edited by the host");
+    await until(() => !guestFiles.cache.has("old.tex"));
+    expect(guest.manager.assets).toMatchObject({ total: 1, synced: 1 });
+    expect(guestFiles.io.pruneCache).toHaveBeenCalled();
+
+    unlink();
+    host.manager.destroy();
+    guest.manager.destroy();
+  });
+
+  it("reports files nobody online can send, and resumes when a peer that has them comes back", async () => {
+    const hostFiles = fakeAssetIo({ "imagenes/logoUMA.png": LOGO });
+    const guestFiles = fakeAssetIo({});
+    const host = await makeAssetPeer("Host", hostFiles.io);
+    const guest = await makeAssetPeer("Guest", guestFiles.io);
+    host.provider.markSynced();
+    await vi.advanceTimersByTimeAsync(10);
+
+    // The guest got the manifest, then the host left before sending anything.
+    sync(host.manager, guest.manager);
+    removeAwarenessStates(guest.manager.awareness, [host.manager.doc.clientID], "left");
+    guest.provider.markSynced();
+    await until(() => guest.manager.assets.unavailable === 1);
+    expect(guest.manager.assets.items).toEqual([{ path: "imagenes/logoUMA.png", size: LOGO.length, state: "unavailable" }]);
+
+    const log = "error: main.tex:3: Unable to load picture or PDF file 'imagenes/logoUMA.png'";
+    expect(explainMissingAsset(log, guest.manager.assets)).toEqual({ path: "imagenes/logoUMA.png", state: "unavailable" });
+
+    // The host comes back online.
+    const unlink = link(host.manager, guest.manager);
+    host.manager.awareness.setLocalStateField("user", { name: "Host", color: "#22c55e" });
+    await until(() => guest.manager.assets.synced === 1);
+    expect(explainMissingAsset(log, guest.manager.assets)).toBeNull();
+
+    unlink();
+    host.manager.destroy();
+    guest.manager.destroy();
+  });
+
+  it("a sender that leaves mid-transfer turns the file unavailable, and the download restarts when it is back", async () => {
+    const hostFiles = fakeAssetIo({ "imagenes/logoUMA.png": LOGO });
+    // A slow disk/link: every chunk takes 20 ms, so the transfer can be interrupted.
+    const read = hostFiles.io.readChunk;
+    hostFiles.io.readChunk = (path, offset, length) =>
+      new Promise((resolve) => setTimeout(resolve, 20)).then(() => read(path, offset, length));
+    const guestFiles = fakeAssetIo({});
+    const host = await makeAssetPeer("Host", hostFiles.io);
+    const guest = await makeAssetPeer("Guest", guestFiles.io);
+    let unlink = link(host.manager, guest.manager);
+    host.provider.markSynced();
+    guest.provider.markSynced();
+    await until(() => (guest.manager.assets.downloading?.received ?? 0) > 0);
+
+    unlink();
+    removeAwarenessStates(guest.manager.awareness, [host.manager.doc.clientID], "left");
+    await until(() => guest.manager.assets.unavailable === 1);
+    expect(guest.manager.assets.downloading).toBeNull();
+
+    unlink = link(host.manager, guest.manager);
+    host.manager.awareness.setLocalStateField("user", { name: "Host", color: "#22c55e" });
+    await until(() => guest.manager.assets.synced === 1);
+    expect(guestFiles.cache.get("imagenes/logoUMA.png")?.bytes).toEqual(LOGO);
+
+    unlink();
+    host.manager.destroy();
+    guest.manager.destroy();
+  });
+
+  it("explains missing-file errors from tectonic and pdflatex logs only for room assets", () => {
+    const status: AssetSyncStatus = {
+      total: 3,
+      synced: 1,
+      missing: 2,
+      unavailable: 0,
+      tooLarge: 1,
+      downloading: { path: "chapters/intro.tex", size: 10, received: 4 },
+      uploading: 0,
+      maxBytes: 1,
+      items: [
+        { path: "chapters/intro.tex", size: 10, state: "downloading" },
+        { path: "figures/scan.pdf", size: 9e9, state: "tooLarge" },
+        { path: "refs.bib", size: 3, state: "cached" },
+      ],
+    };
+    const latex = "! LaTeX Error: File `chapters/intro.tex' not found.\n";
+    expect(missingFilesInLog(latex)).toEqual(["chapters/intro.tex"]);
+    expect(explainMissingAsset(latex, status)).toEqual({ path: "chapters/intro.tex", state: "downloading" });
+    // \includegraphics{figures/scan} → reported without the extension.
+    expect(explainMissingAsset("LaTeX Error: File `figures/scan' not found", status)).toEqual({
+      path: "figures/scan.pdf",
+      state: "tooLarge",
+    });
+    expect(explainMissingAsset("File `refs.bib' not found", status)).toBeNull();
+    expect(explainMissingAsset("File `nowhere.png' not found", status)).toBeNull();
+    expect(explainMissingAsset("Undefined control sequence", status)).toBeNull();
+  });
+
+  it("isAssetOnlyTransaction tells transfers apart from edits", () => {
+    const doc = new Y.Doc();
+    const seen: boolean[] = [];
+    doc.on("afterTransaction", (tr: Y.Transaction) => seen.push(isAssetOnlyTransaction(doc, tr)));
+    doc.transact(() => doc.getMap(ASSET_CHUNKS_KEY).set("h:0", new Uint8Array([1])), ASSET_ORIGIN);
+    doc.getText("t").insert(0, "edit");
+    doc.transact(() => {
+      doc.getMap(ASSETS_KEY).set("a.png", { hash: "h", size: 1, by: 1 });
+      doc.getText("t").insert(0, "x");
+    });
+    expect(seen).toEqual([true, false, false]);
   });
 });

@@ -21,6 +21,9 @@
 //   signaling server, public or ours, only relays opaque blobs.
 // * ICE: public STUN by default, plus an optional TURN relay (user setting or
 //   build-time env) for peers behind symmetric NATs.
+// * Project assets (images, .bib, .sty, \input chapters) travel through the same
+//   doc and connections (assetSync.ts), so a guest can compile without the
+//   host's folder. Asset-only transactions never trigger a main.tex save.
 
 import * as Y from "yjs";
 import { WebrtcProvider } from "y-webrtc";
@@ -28,7 +31,24 @@ import * as sha256 from "lib0/hash/sha256";
 import * as buffer from "lib0/buffer";
 import * as string from "lib0/string";
 import { Awareness, removeAwarenessStates } from "y-protocols/awareness";
-import { saveTexAtomic, saveProjectState, initCollabProject } from "./tauriBridge";
+import {
+  saveTexAtomic,
+  saveProjectState,
+  initCollabProject,
+  assetList,
+  assetCacheList,
+  assetReadChunk,
+  assetCacheStore,
+  assetCachePrune,
+} from "./tauriBridge";
+import {
+  AssetSync,
+  EMPTY_ASSET_STATUS,
+  isAssetOnlyTransaction,
+  readAssetMaxBytes,
+  type AssetIO,
+  type AssetSyncStatus,
+} from "./assetSync";
 import { seedDocFromText, TEXT_KEY } from "./crdtSeed";
 import { applyTextDiff } from "./textDiff";
 
@@ -98,6 +118,7 @@ export interface CollabCallbacks {
   onStatusChange?: (status: ConnectionStatus, diagnostics: ConnectionDiagnostics) => void;
   onRoomIdChange?: (roomId: string | null) => void;
   onSaveStateChange?: (state: SaveState) => void;
+  onAssetsChange?: (status: AssetSyncStatus) => void;
 }
 
 export interface CollabOptions {
@@ -111,6 +132,12 @@ export interface CollabOptions {
   signaling?: string[];
   /** Override the ICE server list (tests / advanced users). */
   iceServers?: RTCIceServer[];
+  /** File access for asset sync (tests). Default: the Tauri commands. */
+  assetIo?: AssetIO;
+  /** Per-file asset transfer limit. Default: user setting or 20 MB. */
+  assetMaxBytes?: number;
+  /** Rescan interval of the project folder for asset sync. Default 4000 ms. */
+  assetScanMs?: number;
 }
 
 export interface CollabSessionConfig {
@@ -275,6 +302,17 @@ export function hasTurnServer(servers: RTCIceServer[]): boolean {
   });
 }
 
+/** Asset I/O backed by the Tauri commands, bound to one project and room. */
+export function tauriAssetIo(projectPath: string, mainFile: string, roomId: string): AssetIO {
+  return {
+    listLocal: () => assetList(projectPath, mainFile),
+    listCache: () => assetCacheList(projectPath, roomId),
+    readChunk: (path, offset, length) => assetReadChunk(projectPath, roomId, path, offset, length),
+    storeCache: (entry, bytes) => assetCacheStore(projectPath, roomId, entry, bytes),
+    pruneCache: (keep) => assetCachePrune(projectPath, roomId, keep),
+  };
+}
+
 /** Pure status derivation, kept separate so it can be unit-tested. */
 export function computeConnectionStatus(input: {
   hasProvider: boolean;
@@ -325,6 +363,7 @@ export class CollabManager {
     turnConfigured: false,
   };
   public saveState: SaveState = { status: "idle", lastSavedAt: null, error: null };
+  public assets: AssetSyncStatus = EMPTY_ASSET_STATUS;
 
   private readonly projectPath: string;
   private readonly mainFile: string;
@@ -336,6 +375,11 @@ export class CollabManager {
   private readonly signalingOverride?: string[];
   private readonly iceServersOverride?: RTCIceServer[];
   private turnConfigured = false;
+  private readonly assetIoOverride?: AssetIO;
+  private readonly assetMaxBytes?: number;
+  private readonly assetScanMs?: number;
+  private assetSync: AssetSync | null = null;
+  private assetStartTimer: ReturnType<typeof setTimeout> | null = null;
 
   private isDestroyed = false;
   private dirty = false;
@@ -360,6 +404,9 @@ export class CollabManager {
     this.signalingTimeoutMs = config.options?.signalingTimeoutMs ?? 10000;
     this.signalingOverride = config.options?.signaling;
     this.iceServersOverride = config.options?.iceServers;
+    this.assetIoOverride = config.options?.assetIo;
+    this.assetMaxBytes = config.options?.assetMaxBytes;
+    this.assetScanMs = config.options?.assetScanMs;
 
     this.doc = new Y.Doc();
     this.ytext = this.doc.getText(TEXT_KEY);
@@ -410,6 +457,11 @@ export class CollabManager {
    */
   public replaceText(next: string): number {
     return applyTextDiff(this.ytext, next, "restore");
+  }
+
+  /** Re-reads the project folder and the asset cache now (collab mode only). */
+  public rescanAssets(): Promise<void> {
+    return this.assetSync?.rescan() ?? Promise.resolve();
   }
 
   /** Updates local awareness state with the user's name and color. */
@@ -545,6 +597,7 @@ export class CollabManager {
       peerOpts: { config: { iceServers } },
     });
     this.provider = provider;
+    this.attachAssetSync(roomId);
 
     const onStatus = () => {
       if (this.provider !== provider) return;
@@ -555,6 +608,7 @@ export class CollabManager {
       if (this.provider !== provider) return;
       this.synced = event.synced;
       if (event.synced) {
+        this.startAssetSync();
         this.clearSeedTimer();
         if (this.ytext.length > 0) {
           this.pendingSeed = null;
@@ -623,6 +677,7 @@ export class CollabManager {
   }
 
   private teardownProvider(): void {
+    this.detachAssetSync();
     for (const cleanup of this.providerCleanups.splice(0)) {
       try {
         cleanup();
@@ -651,6 +706,48 @@ export class CollabManager {
       removeAwarenessStates(this.awareness, remote, "provider teardown");
     }
     this.remotePeerIds.clear();
+  }
+
+  // ─── Asset sync ───────────────────────────────────────────────────
+
+  private attachAssetSync(roomId: string): void {
+    this.detachAssetSync();
+    const sync = new AssetSync({
+      doc: this.doc,
+      awareness: this.awareness,
+      io: this.assetIoOverride ?? tauriAssetIo(this.projectPath, this.mainFile, roomId),
+      maxBytes: this.assetMaxBytes ?? readAssetMaxBytes(),
+      scanIntervalMs: this.assetScanMs,
+      onChange: (status) => {
+        if (this.assetSync !== sync) return;
+        this.assets = status;
+        this.callbacks?.onAssetsChange?.(status);
+      },
+    });
+    this.assetSync = sync;
+    // Publishing compares the local folder with the room's manifest: wait until
+    // the swarm's state arrived, or until it is clear nobody else is there.
+    this.assetStartTimer = setTimeout(() => this.startAssetSync(), this.seedWaitMs);
+  }
+
+  private startAssetSync(): void {
+    if (this.assetStartTimer) {
+      clearTimeout(this.assetStartTimer);
+      this.assetStartTimer = null;
+    }
+    this.assetSync?.start();
+  }
+
+  private detachAssetSync(): void {
+    if (this.assetStartTimer) {
+      clearTimeout(this.assetStartTimer);
+      this.assetStartTimer = null;
+    }
+    if (!this.assetSync) return;
+    this.assetSync.destroy();
+    this.assetSync = null;
+    this.assets = EMPTY_ASSET_STATUS;
+    this.callbacks?.onAssetsChange?.(EMPTY_ASSET_STATUS);
   }
 
   // ─── Seeding ──────────────────────────────────────────────────────
@@ -788,8 +885,15 @@ export class CollabManager {
 
   // ─── Persistence ──────────────────────────────────────────────────
 
-  private readonly handleDocUpdate = (): void => {
+  private readonly handleDocUpdate = (
+    _update: Uint8Array,
+    _origin: unknown,
+    _doc: Y.Doc,
+    tr: Y.Transaction
+  ): void => {
     if (this.isDestroyed) return;
+    // File transfers are not edits: no main.tex rewrite for them.
+    if (tr && isAssetOnlyTransaction(this.doc, tr)) return;
     this.dirty = true;
     if (this.canSave()) {
       this.scheduleSave();
