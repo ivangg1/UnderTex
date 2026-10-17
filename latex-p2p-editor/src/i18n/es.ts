@@ -79,7 +79,7 @@ export const es: Record<keyof typeof en, string> = {
   "join.title": "Unirse a una sala",
   "join.help": "Pega el ID de sala. Elegirás una carpeta local donde se guarda el proyecto cuando seas el Host.",
   "join.placeholder": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "join.submit": "Elegir carpeta y unirse",
+  "join.submit": "Unirse",
 
   // ─── Panel de colaboración ──────────────────────────────────────
   "collab.title": "Colaboración en vivo",
@@ -263,6 +263,26 @@ export const es: Record<keyof typeof en, string> = {
 
   // ─── Zoom ───────────────────────────────────────────────────────
   "zoom.level": "Zoom de la interfaz {percent}% · clic para restablecer (⌥0)",
+
+  // ─── Asistente de nube (lado invitado) ──────────────────────────
+  "collab.files.hostCloud": "El host guarda este proyecto en {provider}. Instálalo y acepta la carpeta compartida para tener las imágenes, el .bib y los capítulos.",
+  "join.help.cloud": "Pega el ID de sala. Si la carpeta del host ya está sincronizada en este equipo (Google Drive, iCloud, OneDrive, Dropbox…) se encuentra sola; si no, empiezas en un espacio temporal y pasas a la carpeta compartida en cuanto aparezca.",
+  "join.foundInCloud": "Te uniste a través de tu carpeta sincronizada: {path}",
+  "join.workspace": "Te uniste en un espacio temporal. El texto se sincroniza en vivo; los archivos del proyecto llegan cuando la carpeta compartida del host esté disponible aquí.",
+  "cloud.assist.install": "El host guarda este proyecto en {provider}, que no está instalado en este equipo. Instálalo y acepta la carpeta compartida para trabajar con los mismos archivos.",
+  "cloud.assist.download": "Descargar {provider}",
+  "cloud.assist.locate": "Esperando a que la carpeta de {provider} del host aparezca en este equipo (acepta el recurso compartido y deja que sincronice)…",
+  "cloud.assist.retry": "Comprobar ahora",
+  "cloud.assist.switched": "Cambiado a la carpeta compartida de {provider}: {path}",
+  "cloud.assist.dismiss": "Descartar",
+
+  // ─── Actualizaciones ────────────────────────────────────────────
+  "update.downloading": "Descargando la versión {version}…",
+  "update.ready": "La versión {version} está lista. Reinicia para actualizar.",
+  "update.install": "Reiniciar y actualizar",
+  "update.later": "Más tarde",
+  "update.error": "No se pudo comprobar la actualización: {message}",
+  "update.retry": "Reintentar",
 
   // ─── Errores ────────────────────────────────────────────────────
   "error.openProject": "No se pudo abrir el proyecto: {message}",

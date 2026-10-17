@@ -18,6 +18,7 @@ use std::time::Duration;
 
 use tauri::{Emitter, Manager, WindowEvent};
 
+use cloud::CloudClient;
 use compiler::{BuildOptions, CompileOutput, CompilerInfo};
 use history::{HistoryStore, SaveOutcome, SnapshotMeta};
 use project::{ProjectData, ProjectFile, RoomMeta};
@@ -44,6 +45,52 @@ fn read_project(project_path: String, main_file: Option<String>) -> Result<Proje
 #[tauri::command]
 fn create_project(parent_dir: String, name: String, files: Vec<ProjectFile>) -> Result<String, String> {
     project::create_project(&parent_dir, &name, &files)
+}
+
+// ─── Cloud sync clients & room lookup ───────────────────────────────
+
+/// Sync clients configured on this machine (Google Drive, OneDrive, Dropbox, iCloud, Box).
+#[tauri::command]
+async fn cloud_clients() -> Vec<CloudClient> {
+    tauri::async_runtime::spawn_blocking(cloud::installed_clients)
+        .await
+        .unwrap_or_default()
+}
+
+/// Finds the local folder of a room (by its `.texcollab/room.json`) under the sync
+/// folders of this machine, so a guest can join through the shared cloud folder.
+#[tauri::command]
+async fn locate_room_in_cloud(room_id: String) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || cloud::locate_room_anywhere(&room_id))
+        .await
+        .ok()
+        .flatten()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Base folder for app-managed room workspaces (`<app data>/rooms`).
+fn room_workspaces_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("App data directory unavailable: {e}"))?
+        .join("rooms"))
+}
+
+#[tauri::command]
+fn room_workspaces_dir(app: tauri::AppHandle) -> Result<String, String> {
+    room_workspaces_root(&app).map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Creates (if needed) the workspace folder used when joining a room without a
+/// shared folder: `<app data>/rooms/<room id>`.
+#[tauri::command]
+fn ensure_room_workspace(app: tauri::AppHandle, room_id: String) -> Result<String, String> {
+    let id = room_id.trim().to_lowercase();
+    uuid::Uuid::parse_str(&id).map_err(|_| format!("'{room_id}' is not a valid room ID"))?;
+    let dir = room_workspaces_root(&app)?.join(&id);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create room workspace: {e}"))?;
+    Ok(dir.to_string_lossy().into_owned())
 }
 
 // ─── Version history (stored in the app data dir, never in the project) ──
@@ -222,6 +269,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(ClosingWindows::default())
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -241,6 +290,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             read_project,
             create_project,
+            cloud_clients,
+            locate_room_in_cloud,
+            room_workspaces_dir,
+            ensure_room_workspace,
             history_list,
             history_save,
             history_read,

@@ -5,7 +5,8 @@
 //! OS on any OS: `\` and `/` are both separators and names compare case-insensitively.
 
 use serde::Serialize;
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 /// Where a project folder lives. `provider` is `"local"` when no sync client was recognised.
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
@@ -213,6 +214,177 @@ pub fn detect(path: &Path) -> CloudLocation {
     }
 }
 
+
+// ─── Installed sync clients & room lookup ───────────────────────────
+
+/// A sync client configured on this machine: the provider and its local root folder(s).
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct CloudClient {
+    pub provider: String,
+    pub roots: Vec<String>,
+}
+
+/// Env override for tests and unusual setups: `provider=/path[;provider=/path…]`
+/// (`;` or the platform path-list separator). Entries without `provider=` are classified by path.
+pub const ROOTS_ENV: &str = "LATEXP2P_CLOUD_ROOTS";
+
+fn home() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
+fn children_starting_with(dir: &Path, prefix: &str) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(dir) else { return Vec::new() };
+    let mut out: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir() && p.file_name().map(|n| strip_prefix_ci(&n.to_string_lossy(), prefix).is_some()).unwrap_or(false))
+        .collect();
+    out.sort();
+    out
+}
+
+/// Sync roots that exist on this machine, in a stable order.
+pub fn candidate_roots() -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Some(h) = home() {
+        if cfg!(target_os = "macos") {
+            roots.extend(children_starting_with(&h.join("Library/CloudStorage"), ""));
+            roots.push(h.join("Library/Mobile Documents/com~apple~CloudDocs"));
+            roots.extend(children_starting_with(Path::new("/Volumes"), "GoogleDrive"));
+        }
+        if cfg!(target_os = "windows") {
+            roots.push(h.join("iCloudDrive"));
+            for letter in b'D'..=b'Z' {
+                for name in ["My Drive", "Mi unidad", "Shared drives", "Unidades compartidas"] {
+                    roots.push(PathBuf::from(format!("{}:\\{}", letter as char, name)));
+                }
+            }
+        }
+        roots.extend(children_starting_with(&h, "OneDrive"));
+        roots.extend(children_starting_with(&h, "Dropbox"));
+        roots.push(h.join("Google Drive"));
+        roots.extend(children_starting_with(&h, "Box"));
+        if cfg!(target_os = "linux") {
+            if let Ok(entries) = fs::read_dir(h.join("Insync")) {
+                for acct in entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
+                    roots.extend(children_starting_with(&acct, ""));
+                }
+            }
+            if let Ok(uid) = std::env::var("UID") {
+                roots.extend(children_starting_with(Path::new(&format!("/run/user/{uid}/gvfs")), "google-drive:"));
+            }
+        }
+    }
+    roots.retain(|r| r.is_dir());
+    roots.dedup();
+    roots
+}
+
+/// Parses [`ROOTS_ENV`]: explicit `provider=path` pairs or bare paths classified by name.
+pub fn parse_roots_override(value: &str) -> Vec<(String, PathBuf)> {
+    value
+        .split([';', if cfg!(windows) { ';' } else { ':' }])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|entry| match entry.split_once('=') {
+            Some((provider, path)) if !provider.is_empty() && !path.is_empty() => {
+                (provider.trim().to_string(), PathBuf::from(path.trim()))
+            }
+            _ => (classify_path(entry).provider, PathBuf::from(entry)),
+        })
+        .collect()
+}
+
+/// Installed clients = existing sync roots grouped by provider (plus the env override).
+pub fn installed_clients() -> Vec<CloudClient> {
+    let mut pairs: Vec<(String, PathBuf)> = candidate_roots()
+        .into_iter()
+        .map(|root| {
+            // Classify a child path so home-folder roots (`~/Dropbox`) resolve like project paths.
+            let probe = root.join("x");
+            (classify_path(&probe.to_string_lossy()).provider, root)
+        })
+        .collect();
+    if let Ok(value) = std::env::var(ROOTS_ENV) {
+        pairs.extend(parse_roots_override(&value).into_iter().filter(|(_, p)| p.is_dir()));
+    }
+    let mut clients: Vec<CloudClient> = Vec::new();
+    for (provider, root) in pairs {
+        if provider == "local" {
+            continue;
+        }
+        let root = root.to_string_lossy().into_owned();
+        match clients.iter_mut().find(|c| c.provider == provider) {
+            Some(c) => {
+                if !c.roots.contains(&root) {
+                    c.roots.push(root);
+                }
+            }
+            None => clients.push(CloudClient { provider, roots: vec![root] }),
+        }
+    }
+    clients
+}
+
+/// Folders never descended into while looking for a room.
+const SKIP_DIRS: &[&str] = &["node_modules", "target", "Library", "Applications", ".git", "Photos Library.photoslibrary"];
+
+/// Breadth-first search for the folder whose `.texcollab/room.json` has `room_id`.
+/// Bounded by depth and by the number of directories visited so a huge Drive never
+/// stalls the app. Hidden folders are skipped (except `.texcollab` itself, read directly).
+pub fn locate_room(room_id: &str, roots: &[PathBuf], max_depth: usize, max_dirs: usize) -> Option<PathBuf> {
+    use std::collections::VecDeque;
+    let wanted = room_id.trim().to_lowercase();
+    if wanted.is_empty() {
+        return None;
+    }
+    let mut queue: VecDeque<(PathBuf, usize)> = roots.iter().map(|r| (r.clone(), 0)).collect();
+    let mut visited = 0usize;
+    while let Some((dir, depth)) = queue.pop_front() {
+        if visited >= max_dirs {
+            break;
+        }
+        visited += 1;
+        let room_file = dir.join(crate::project::COLLAB_DIR).join(crate::project::ROOM_FILE);
+        if let Ok(text) = fs::read_to_string(&room_file) {
+            if let Ok(meta) = serde_json::from_str::<crate::project::RoomMeta>(&text) {
+                if meta.room_id.to_lowercase() == wanted {
+                    return Some(dir);
+                }
+            }
+        }
+        if depth >= max_depth {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&dir) else { continue };
+        let mut children: Vec<PathBuf> = entries
+            .flatten()
+            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+            .map(|e| e.path())
+            .filter(|p| {
+                let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                !name.starts_with('.') && !SKIP_DIRS.contains(&name.as_str())
+            })
+            .collect();
+        children.sort();
+        for child in children {
+            queue.push_back((child, depth + 1));
+        }
+    }
+    None
+}
+
+/// Default lookup across every installed client (and the env override).
+pub fn locate_room_anywhere(room_id: &str) -> Option<PathBuf> {
+    let roots: Vec<PathBuf> = installed_clients()
+        .into_iter()
+        .flat_map(|c| c.roots.into_iter().map(PathBuf::from))
+        .collect();
+    locate_room(room_id, &roots, 6, 20_000)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,6 +483,58 @@ mod tests {
         );
         assert_eq!(classify_path("/home/ana/projects/thesis"), CloudLocation::local());
         assert_eq!(classify_path("/srv/home/x/Dropbox"), CloudLocation::local());
+    }
+
+    fn temp_root(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("cloud_{name}_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_room(dir: &Path, room_id: &str) {
+        let collab = dir.join(crate::project::COLLAB_DIR);
+        fs::create_dir_all(&collab).unwrap();
+        fs::write(collab.join(crate::project::ROOM_FILE), format!(r#"{{"room_id":"{room_id}","main_file":"main.tex"}}"#)).unwrap();
+    }
+
+    #[test]
+    fn locate_room_finds_the_matching_folder_and_respects_bounds() {
+        let root = temp_root("locate");
+        let target = root.join("Shared drives/Lab/thesis");
+        fs::create_dir_all(&target).unwrap();
+        write_room(&target, "AAAAAAAA-0000-4000-8000-000000000001");
+        let decoy = root.join("My Drive/other");
+        fs::create_dir_all(&decoy).unwrap();
+        write_room(&decoy, "bbbbbbbb-0000-4000-8000-000000000002");
+        let hidden = root.join(".Trash/thesis");
+        fs::create_dir_all(&hidden).unwrap();
+        write_room(&hidden, "cccccccc-0000-4000-8000-000000000003");
+        fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        write_room(&root.join("node_modules/pkg"), "dddddddd-0000-4000-8000-000000000004");
+
+        let roots = vec![root.clone()];
+        // Case-insensitive match, depth 3.
+        assert_eq!(locate_room("aaaaaaaa-0000-4000-8000-000000000001", &roots, 6, 10_000), Some(target.clone()));
+        assert_eq!(locate_room("bbbbbbbb-0000-4000-8000-000000000002", &roots, 6, 10_000), Some(decoy));
+        // Hidden and skipped folders are never searched.
+        assert_eq!(locate_room("cccccccc-0000-4000-8000-000000000003", &roots, 6, 10_000), None);
+        assert_eq!(locate_room("dddddddd-0000-4000-8000-000000000004", &roots, 6, 10_000), None);
+        // Depth and directory budgets bound the search.
+        assert_eq!(locate_room("aaaaaaaa-0000-4000-8000-000000000001", &roots, 2, 10_000), None);
+        assert_eq!(locate_room("aaaaaaaa-0000-4000-8000-000000000001", &roots, 6, 2), None);
+        assert_eq!(locate_room("", &roots, 6, 10_000), None);
+        assert_eq!(locate_room("nope", &[PathBuf::from("/definitely/missing")], 6, 10_000), None);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn roots_override_parses_pairs_and_bare_paths() {
+        let parsed = parse_roots_override("google_drive=/tmp/gd; /Users/ana/Dropbox ;dropbox= ;=x");
+        assert_eq!(parsed[0], ("google_drive".to_string(), PathBuf::from("/tmp/gd")));
+        assert_eq!(parsed[1], ("dropbox".to_string(), PathBuf::from("/Users/ana/Dropbox")));
+        // Malformed pairs fall back to classification of the raw entry (local → ignored later).
+        assert_eq!(parsed[2].0, "local");
+        assert_eq!(parsed[3].0, "local");
     }
 
     #[test]

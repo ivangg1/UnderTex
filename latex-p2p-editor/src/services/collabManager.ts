@@ -103,6 +103,14 @@ export interface CollabCallbacks {
   onStatusChange?: (status: ConnectionStatus, diagnostics: ConnectionDiagnostics) => void;
   onRoomIdChange?: (roomId: string | null) => void;
   onSaveStateChange?: (state: SaveState) => void;
+  /** Room-wide info published by the host (cloud location of the project folder…). */
+  onRoomInfoChange?: (info: RoomInfo) => void;
+}
+
+/** Shared, CRDT-replicated metadata about the room (a Y.Map named "meta"). */
+export interface RoomInfo {
+  cloud?: { provider: string; account: string | null };
+  hostName?: string;
 }
 
 export interface CollabOptions {
@@ -343,6 +351,8 @@ export function connectedPeerIds(room: {
  */
 export class CollabManager {
   public readonly doc: Y.Doc;
+  /** Replicated room metadata; see [`RoomInfo`]. */
+  public readonly meta: Y.Map<RoomInfo[keyof RoomInfo]>;
   public readonly ytext: Y.Text;
   public readonly awareness: Awareness;
   public provider: WebrtcProvider | null = null;
@@ -401,6 +411,8 @@ export class CollabManager {
 
     this.doc = new Y.Doc();
     this.ytext = this.doc.getText(TEXT_KEY);
+    this.meta = this.doc.getMap<RoomInfo[keyof RoomInfo]>("meta");
+    this.meta.observe(this.handleMetaChange);
     this.awareness = new Awareness(this.doc);
 
     if (config.initialCrdtState && config.initialCrdtState.length > 0) {
@@ -435,6 +447,36 @@ export class CollabManager {
   }
 
   // ─── Public API ───────────────────────────────────────────────────
+
+  /** Room metadata as currently replicated. */
+  public getRoomInfo(): RoomInfo {
+    const info: RoomInfo = {};
+    const cloud = this.meta.get("cloud") as RoomInfo["cloud"] | undefined;
+    const hostName = this.meta.get("hostName") as string | undefined;
+    if (cloud) info.cloud = cloud;
+    if (hostName) info.hostName = hostName;
+    return info;
+  }
+
+  /**
+   * Publishes room metadata to every peer. Any peer whose folder is in a cloud
+   * may call it; only a cloud location (not "local") is written, and never over
+   * an existing one, so a peer in a temporary workspace cannot erase it.
+   */
+  public setRoomInfo(info: RoomInfo): void {
+    this.doc.transact(() => {
+      if (info.cloud && info.cloud.provider !== "local") {
+        const current = this.meta.get("cloud") as RoomInfo["cloud"] | undefined;
+        if (!current || current.provider === "local") this.meta.set("cloud", info.cloud);
+      }
+      if (info.hostName) this.meta.set("hostName", info.hostName);
+    }, "room-info");
+  }
+
+  private readonly handleMetaChange = (): void => {
+    if (this.isDestroyed) return;
+    this.callbacks?.onRoomInfoChange?.(this.getRoomInfo());
+  };
 
   /** Current document text. */
   public getText(): string {
@@ -536,6 +578,7 @@ export class CollabManager {
     try {
       this.teardownProvider();
       this.doc.off("update", this.handleDocUpdate);
+      this.meta.unobserve(this.handleMetaChange);
       this.awareness.off("change", this.handleAwarenessChange);
       this.awareness.destroy();
       this.doc.destroy();

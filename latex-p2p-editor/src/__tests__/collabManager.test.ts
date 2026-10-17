@@ -355,6 +355,43 @@ describe("Solo mode persistence", () => {
   });
 });
 
+describe("Room info (cloud location) replication", () => {
+  it("replicates the host's cloud location to guests and never lets a local workspace overwrite it", () => {
+    const host = makeManager({ isCollab: true, roomId: "room-cloud" });
+    const guest = makeManager({ isCollab: true, roomId: "room-cloud" });
+    const seen: unknown[] = [];
+    guest.manager.destroy(); // rebuild with a callback
+    const guestWithCb = new CollabManager({
+      projectPath: "/tmp/rooms/room-cloud",
+      mainFile: "main.tex",
+      isCollab: true,
+      roomId: "room-cloud",
+      initialTexContent: "",
+      initialCrdtState: null,
+      currentUser: { name: "G", color: "#000" },
+      options: { signaling: [] },
+      callbacks: { onRoomInfoChange: (info) => seen.push(info) },
+    });
+
+    host.manager.setRoomInfo({ cloud: { provider: "google_drive", account: "ana@gmail.com" }, hostName: "Ana" });
+    sync(host.manager, guestWithCb);
+    expect(guestWithCb.getRoomInfo()).toEqual({ cloud: { provider: "google_drive", account: "ana@gmail.com" }, hostName: "Ana" });
+    expect(seen.at(-1)).toEqual({ cloud: { provider: "google_drive", account: "ana@gmail.com" }, hostName: "Ana" });
+
+    // A guest in a local workspace (promoted or not) cannot replace the cloud entry.
+    guestWithCb.setRoomInfo({ cloud: { provider: "local", account: null } });
+    sync(host.manager, guestWithCb);
+    expect(host.manager.getRoomInfo().cloud?.provider).toBe("google_drive");
+    // Another cloud location does not override the first either.
+    guestWithCb.setRoomInfo({ cloud: { provider: "dropbox", account: null } });
+    sync(host.manager, guestWithCb);
+    expect(host.manager.getRoomInfo().cloud?.provider).toBe("google_drive");
+
+    host.manager.destroy();
+    guestWithCb.destroy();
+  });
+});
+
 describe("Restoring a version", () => {
   it("replaceText applies minimal edits, marks the doc dirty and saves like a normal edit", async () => {
     const { manager, saveStates } = makeManager();
