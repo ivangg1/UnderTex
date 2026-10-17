@@ -22,7 +22,7 @@ export default function JoinPanel({ onJoin }: JoinPanelProps) {
 
   return (
     <form onSubmit={submit} className="px-4 py-3 flex flex-col gap-3">
-      <p className="text-[11px] text-mk-fg3 leading-relaxed">{t("join.help")}</p>
+      <p className="text-[11px] text-mk-fg3 leading-relaxed">{t("join.help.cloud")}</p>
       <input
         autoFocus
         value={value}

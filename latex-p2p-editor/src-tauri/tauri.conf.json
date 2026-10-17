@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "latex-p2p-editor",
+  "productName": "LaTeX P2P",
   "version": "0.1.0",
   "identifier": "com.ivang.latex-p2p-editor",
   "build": {
@@ -30,6 +30,15 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVEQkJBQzQxNjI0OTA5MzEKUldReENVbGlRYXk3WGNZTEJXV1d0ZUlrMzVQdk92Qk50S3NJeXlIMTRzdzhnZFQ4RlFTZURPem0K",
+      "endpoints": [
+        "https://github.com/ivangg1/editor-p2p-latex/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

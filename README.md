@@ -32,6 +32,13 @@ compile limits.
 - **On-demand P2P collaboration** (Google-Docs style, live cursors): press
   *Share* and either share the folder through your cloud **or** send the room ID
   (a teammate joins with *Join*, no shared folder needed).
+- **Cloud folder detection**: the room panel and the top-bar tooltip show which
+  sync client keeps the project (Google Drive, iCloud Drive, OneDrive, Dropbox,
+  Box) and the account from its folder name, e.g. *Google Drive ·
+  ana@gmail.com*. Detection is path-based only (macOS `~/Library/CloudStorage`,
+  `G:\My Drive`, `%USERPROFILE%\OneDrive`, `~/Dropbox`, …), no cloud API or
+  sign-in. When a host's project is local, the panel reminds them that guests
+  only get the root `.tex` live, not images or `.bib` files.
 - **Dynamic host election**: in a room only the peer with the lowest `clientID`
   writes to disk (this is what avoids Drive/iCloud *conflicted copies*). If the
   host drops, the next peer takes over within milliseconds and consolidates the
@@ -174,6 +181,42 @@ latex-p2p-editor/
     and a previous full build so the other chapters' `.aux` files exist.
   - *Draft* changes the output (frames instead of figures, marked overfull boxes).
   - The *precompiled preamble* is `pdflatex` only and requires `mylatexformat.ltx`.
+
+## Joining through a shared cloud folder
+
+When the host's project lives in Google Drive, OneDrive, Dropbox, iCloud Drive or
+Box, the app publishes that in the room. A teammate who presses **Join** with the
+room ID never has to pick a folder:
+
+1. If the shared folder is already synced on their computer, it is found by its
+   room ID under the local sync folders and opened directly.
+2. Otherwise they start in a temporary workspace (text syncs live) and the app
+   checks whether the provider's client is installed: if not, it offers the
+   download page; if it is, it keeps looking for the folder and switches to it
+   automatically once the share has synced.
+
+The app cannot grant access: the host still shares the folder in the provider.
+
+## Releases and auto-update
+
+Pushing a tag `vX.Y.Z` (matching `latex-p2p-editor/src-tauri/tauri.conf.json`)
+runs [`release.yml`](.github/workflows/release.yml): it builds macOS (Apple
+Silicon and Intel), Windows and Linux bundles, signs the updater artifacts and
+publishes a GitHub Release with `latest.json`. Installed apps check that file on
+start-up and every six hours, download the new version in the background and
+show a *Restart and update* banner.
+
+Required repository secrets (Settings → Secrets → Actions):
+
+| Secret                               | Value                                                     |
+| ------------------------------------ | --------------------------------------------------------- |
+| `TAURI_SIGNING_PRIVATE_KEY`          | contents of the updater private key (`tauri signer generate`) |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | the key's password (empty if none)                        |
+
+The matching public key is in `tauri.conf.json` (`plugins.updater.pubkey`).
+Losing the private key means future updates cannot be signed for existing
+installs. [`ci.yml`](.github/workflows/ci.yml) runs vitest, the build and
+`cargo test` on every push and pull request.
 
 ## Tests
 

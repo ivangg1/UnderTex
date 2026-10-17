@@ -77,7 +77,7 @@ export const en = {
   "join.title": "Join a room",
   "join.help": "Paste the room ID. You will pick a local folder where the project is saved whenever you are the Host.",
   "join.placeholder": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "join.submit": "Choose folder and join",
+  "join.submit": "Join",
 
   // ─── Collab panel ───────────────────────────────────────────────
   "collab.title": "Live collaboration",
@@ -90,6 +90,16 @@ export const en = {
   "collab.hostWrites": "Host · writes to disk",
   "collab.guestRam": "Guest · in memory",
   "collab.connection": "Connection",
+  "collab.files": "Project files",
+  "collab.files.cloudTip": "Synced by {provider}: peers who have this folder shared see the same images, .bib and chapters.",
+  "collab.files.localHint":
+    "This folder is only on this computer. Guests get the root .tex live, but images, .bib and other files only if they have them too: put the project in Google Drive, iCloud Drive, OneDrive or Dropbox and share the folder.",
+  "cloud.provider.google_drive": "Google Drive",
+  "cloud.provider.onedrive": "OneDrive",
+  "cloud.provider.dropbox": "Dropbox",
+  "cloud.provider.icloud": "iCloud Drive",
+  "cloud.provider.box": "Box",
+  "cloud.provider.local": "Local folder",
   "collab.disconnect": "Disconnect and work solo",
   "collab.disconnect.tip": "Close WebRTC and return to solo mode",
 
@@ -251,6 +261,26 @@ export const en = {
 
   // ─── Zoom ───────────────────────────────────────────────────────
   "zoom.level": "UI zoom {percent}% · click to reset (⌥0)",
+
+  // ─── Cloud assist (guest side) ──────────────────────────────────
+  "collab.files.hostCloud": "The host keeps this project in {provider}. Install it and accept the shared folder to get the images, .bib and chapters.",
+  "join.help.cloud": "Paste the room ID. If the host's folder is already synced to this computer (Google Drive, iCloud, OneDrive, Dropbox…) it is found automatically; otherwise you start in a temporary workspace and switch to the shared folder as soon as it appears.",
+  "join.foundInCloud": "Joined through your synced folder: {path}",
+  "join.workspace": "Joined in a temporary workspace. Text syncs live; the project files arrive when the host's shared folder is available here.",
+  "cloud.assist.install": "The host keeps this project in {provider}, which is not installed on this computer. Install it and accept the shared folder to work with the same files.",
+  "cloud.assist.download": "Download {provider}",
+  "cloud.assist.locate": "Waiting for the host's {provider} folder to appear on this computer (accept the share and let it sync)…",
+  "cloud.assist.retry": "Check now",
+  "cloud.assist.switched": "Switched to the shared {provider} folder: {path}",
+  "cloud.assist.dismiss": "Dismiss",
+
+  // ─── Updates ────────────────────────────────────────────────────
+  "update.downloading": "Downloading version {version}…",
+  "update.ready": "Version {version} is ready. Restart to update.",
+  "update.install": "Restart and update",
+  "update.later": "Later",
+  "update.error": "Update check failed: {message}",
+  "update.retry": "Retry",
 
   // ─── Errors ─────────────────────────────────────────────────────
   "error.openProject": "Could not open the project: {message}",

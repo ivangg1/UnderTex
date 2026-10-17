@@ -8,6 +8,7 @@ import {
 import {
   CollabManager,
   computeConnectionStatus,
+  connectedPeerIds,
   getSignalingServers,
   DEFAULT_SIGNALING_SERVERS,
   SIGNALING_OVERRIDE_KEY,
@@ -63,11 +64,52 @@ const { MockWebrtcProvider, MockSignalingConn } = vi.hoisted(() => {
   }
 }
 
+  /** simple-peer stand-in: node-style events, destroy() closes asynchronously. */
+  class MockPeer {
+    private handlers = new Map<string, Set<() => void>>();
+    destroyed = false;
+    on(event: string, handler: () => void) {
+      if (!this.handlers.has(event)) this.handlers.set(event, new Set());
+      this.handlers.get(event)!.add(handler);
+    }
+    removeListener(event: string, handler: () => void) {
+      this.handlers.get(event)?.delete(handler);
+    }
+    emit(event: string) {
+      Array.from(this.handlers.get(event) ?? []).forEach((h) => h());
+    }
+    destroy = vi.fn(() => {
+      if (this.destroyed) return;
+      this.destroyed = true;
+      queueMicrotask(() => this.emit("close"));
+    });
+  }
+
+  /** y-webrtc WebrtcConn stand-in, including its close handler. */
+  class MockWebrtcConn {
+    connected = false;
+    closed = false;
+    peer = new MockPeer();
+    constructor(provider: MockWebrtcProvider, remotePeerId: string) {
+      this.peer.on("connect", () => {
+        this.connected = true;
+      });
+      this.peer.on("close", () => {
+        this.connected = false;
+        this.closed = true;
+        if (provider.room.webrtcConns.get(remotePeerId) === this) {
+          provider.room.webrtcConns.delete(remotePeerId);
+          provider.emitPeers([], [remotePeerId]);
+        }
+      });
+    }
+  }
+
   let providerSeq = 0;
 
   class MockWebrtcProvider extends MockObservable {
   static instances: MockWebrtcProvider[] = [];
-  public room: { peerId: string; webrtcConns: Map<string, unknown>; bcConns: Set<string> };
+  public room: { peerId: string; webrtcConns: Map<string, MockWebrtcConn>; bcConns: Set<string> };
   public signalingConns: MockSignalingConn[];
   public destroyed = false;
   public destroy = vi.fn(() => {
@@ -94,30 +136,42 @@ const { MockWebrtcProvider, MockSignalingConn } = vi.hoisted(() => {
     return this.opts.awareness;
   }
 
-  /** Simulates y-webrtc: a remote peer connects (announced through the 'peers' event). */
-  connectPeer(peerId: string) {
-    this.room.webrtcConns.set(peerId, {});
+  emitPeers(added: string[], removed: string[]) {
     this.emit("peers", [
       {
-        added: [peerId],
-        removed: [],
+        added,
+        removed,
         webrtcPeers: Array.from(this.room.webrtcConns.keys()),
         bcPeers: Array.from(this.room.bcConns),
       },
     ]);
+  }
+
+  /**
+   * Simulates y-webrtc receiving an "announce": a conn is created and listed in
+   * the 'peers' event before any handshake happened.
+   */
+  announcePeer(peerId: string): MockWebrtcConn {
+    const conn = new MockWebrtcConn(this, peerId);
+    this.room.webrtcConns.set(peerId, conn);
+    this.emitPeers([peerId], []);
+    return conn;
+  }
+
+  /** The handshake of an announced peer completes (simple-peer 'connect'). */
+  completeHandshake(peerId: string) {
+    this.room.webrtcConns.get(peerId)!.peer.emit("connect");
+  }
+
+  /** Simulates y-webrtc: a remote peer announces itself and connects. */
+  connectPeer(peerId: string) {
+    this.announcePeer(peerId);
+    this.completeHandshake(peerId);
     this.emit("status", [{ connected: true }]);
   }
 
   disconnectPeer(peerId: string) {
-    this.room.webrtcConns.delete(peerId);
-    this.emit("peers", [
-      {
-        added: [],
-        removed: [peerId],
-        webrtcPeers: Array.from(this.room.webrtcConns.keys()),
-        bcPeers: Array.from(this.room.bcConns),
-      },
-    ]);
+    this.room.webrtcConns.get(peerId)?.peer.emit("close");
   }
 
   markSynced(synced = true) {
@@ -298,6 +352,43 @@ describe("Solo mode persistence", () => {
     expect(tauriBridge.saveTexAtomic).toHaveBeenCalledTimes(2);
     expect(saveStates.at(-1)?.status).toBe("saved");
     manager.destroy();
+  });
+});
+
+describe("Room info (cloud location) replication", () => {
+  it("replicates the host's cloud location to guests and never lets a local workspace overwrite it", () => {
+    const host = makeManager({ isCollab: true, roomId: "room-cloud" });
+    const guest = makeManager({ isCollab: true, roomId: "room-cloud" });
+    const seen: unknown[] = [];
+    guest.manager.destroy(); // rebuild with a callback
+    const guestWithCb = new CollabManager({
+      projectPath: "/tmp/rooms/room-cloud",
+      mainFile: "main.tex",
+      isCollab: true,
+      roomId: "room-cloud",
+      initialTexContent: "",
+      initialCrdtState: null,
+      currentUser: { name: "G", color: "#000" },
+      options: { signaling: [] },
+      callbacks: { onRoomInfoChange: (info) => seen.push(info) },
+    });
+
+    host.manager.setRoomInfo({ cloud: { provider: "google_drive", account: "ana@gmail.com" }, hostName: "Ana" });
+    sync(host.manager, guestWithCb);
+    expect(guestWithCb.getRoomInfo()).toEqual({ cloud: { provider: "google_drive", account: "ana@gmail.com" }, hostName: "Ana" });
+    expect(seen.at(-1)).toEqual({ cloud: { provider: "google_drive", account: "ana@gmail.com" }, hostName: "Ana" });
+
+    // A guest in a local workspace (promoted or not) cannot replace the cloud entry.
+    guestWithCb.setRoomInfo({ cloud: { provider: "local", account: null } });
+    sync(host.manager, guestWithCb);
+    expect(host.manager.getRoomInfo().cloud?.provider).toBe("google_drive");
+    // Another cloud location does not override the first either.
+    guestWithCb.setRoomInfo({ cloud: { provider: "dropbox", account: null } });
+    sync(host.manager, guestWithCb);
+    expect(host.manager.getRoomInfo().cloud?.provider).toBe("google_drive");
+
+    host.manager.destroy();
+    guestWithCb.destroy();
   });
 });
 
@@ -619,6 +710,104 @@ describe("Connection diagnostics", () => {
 
     await manager.stopCollaboration();
     expect(manager.status).toBe("disconnected");
+    manager.destroy();
+  });
+});
+
+describe("Half-open WebRTC peers (announce without handshake)", () => {
+  it("counts only connected WebRTC conns and BroadcastChannel peers", () => {
+    const room = {
+      webrtcConns: new Map([
+        ["open", { connected: true }],
+        ["pending", { connected: false }],
+      ]),
+      bcConns: new Set(["bc"]),
+    };
+    expect(connectedPeerIds(room)).toEqual(new Set(["open", "bc"]));
+  });
+
+  it("an announce-only peer does not make the status connected", async () => {
+    const { manager } = makeManager({ isCollab: true, roomId: "room-ho-1" });
+    await tick();
+    const provider = latestProvider();
+    provider.signalingConns[0].setConnected(true);
+    expect(manager.status).toBe("waiting");
+
+    provider.announcePeer("peer-ghost");
+    expect(provider.room.webrtcConns.size).toBe(1);
+    expect(manager.status).toBe("waiting");
+    expect(manager.diagnostics.webrtcPeers).toBe(0);
+    manager.destroy();
+  });
+
+  it("an announce-only peer does not stop a lone host from saving", async () => {
+    const { manager } = makeManager({ isCollab: true, roomId: "room-ho-2" });
+    await tick();
+    const provider = latestProvider();
+    provider.announcePeer("peer-ghost");
+    vi.mocked(tauriBridge.saveProjectState).mockClear();
+
+    manager.ytext.insert(0, "% lone host edit\n");
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(tauriBridge.saveProjectState).toHaveBeenCalledTimes(1);
+    expect(manager.saveState.status).toBe("saved");
+    manager.destroy();
+  });
+
+  it("drops a peer that never completes the handshake after the timeout", async () => {
+    const { manager } = makeManager({
+      isCollab: true,
+      roomId: "room-ho-3",
+      options: { signaling: ["wss://sig-a.test"], handshakeTimeoutMs: 20000 },
+    });
+    await tick();
+    const provider = latestProvider();
+    const conn = provider.announcePeer("peer-ghost");
+
+    await vi.advanceTimersByTimeAsync(19_999);
+    expect(conn.peer.destroy).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(conn.peer.destroy).toHaveBeenCalledTimes(1);
+    expect(provider.room.webrtcConns.size).toBe(0);
+    expect(conn.closed).toBe(true);
+    manager.destroy();
+  });
+
+  it("a peer that completes the handshake counts, blocks unsynced saves and is never timed out", async () => {
+    const { manager } = makeManager({
+      isCollab: true,
+      roomId: "room-ho-4",
+      options: { signaling: ["wss://sig-a.test"], handshakeTimeoutMs: 20000 },
+    });
+    await tick();
+    const provider = latestProvider();
+    const conn = provider.announcePeer("peer-real");
+    expect(manager.status).not.toBe("connected");
+
+    await vi.advanceTimersByTimeAsync(5000);
+    provider.completeHandshake("peer-real");
+    expect(manager.status).toBe("connected");
+    expect(manager.diagnostics.webrtcPeers).toBe(1);
+
+    vi.mocked(tauriBridge.saveProjectState).mockClear();
+    manager.ytext.insert(0, "% not synced yet\n");
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(conn.peer.destroy).not.toHaveBeenCalled();
+    expect(tauriBridge.saveProjectState).not.toHaveBeenCalled();
+
+    provider.disconnectPeer("peer-real");
+    expect(manager.status).not.toBe("connected");
+    expect(manager.diagnostics.webrtcPeers).toBe(0);
+    manager.destroy();
+  });
+
+  it("clears pending handshake timers when collaboration stops", async () => {
+    const { manager } = makeManager({ isCollab: true, roomId: "room-ho-5" });
+    await tick();
+    const conn = latestProvider().announcePeer("peer-ghost");
+    await manager.stopCollaboration();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(conn.peer.destroy).not.toHaveBeenCalled();
     manager.destroy();
   });
 });

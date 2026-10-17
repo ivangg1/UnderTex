@@ -18,6 +18,16 @@ export interface ProjectData {
   is_collab: boolean;
   room_id: string | null;
   crdt_state: number[] | null; // Vec<u8> arrives as number[]
+  /** Desktop sync client that keeps the folder in the cloud, detected from its path. */
+  cloud: CloudLocation;
+}
+
+export type CloudProvider = "google_drive" | "onedrive" | "dropbox" | "icloud" | "box" | "local";
+
+export interface CloudLocation {
+  provider: CloudProvider;
+  /** Account from the sync folder name (email, "Personal", company), when present. */
+  account: string | null;
 }
 
 export interface RoomMeta {
@@ -146,6 +156,39 @@ export interface ProjectFile {
 /** Creates `<parentDir>/<name>` with the given files and returns the project path. */
 export async function createProject(parentDir: string, name: string, files: ProjectFile[]): Promise<string> {
   return invoke<string>("create_project", { parentDir, name, files });
+}
+
+// ─── Cloud sync clients & room lookup ───────────────────────────────
+
+export interface CloudClient {
+  provider: CloudProvider;
+  roots: string[];
+}
+
+/** Sync clients configured on this machine (by their local sync folders). */
+export async function cloudClients(): Promise<CloudClient[]> {
+  return invoke<CloudClient[]>("cloud_clients");
+}
+
+/** Finds the local folder of a room under this machine's cloud sync folders. */
+export async function locateRoomInCloud(roomId: string): Promise<string | null> {
+  return invoke<string | null>("locate_room_in_cloud", { roomId });
+}
+
+/** Base folder of app-managed room workspaces. */
+export async function roomWorkspacesDir(): Promise<string> {
+  return invoke<string>("room_workspaces_dir");
+}
+
+/** Creates/returns the workspace used when joining a room without a shared folder. */
+export async function ensureRoomWorkspace(roomId: string): Promise<string> {
+  return invoke<string>("ensure_room_workspace", { roomId });
+}
+
+/** Opens an https URL in the system browser. */
+export async function openExternalUrl(url: string): Promise<void> {
+  const { openUrl } = await import("@tauri-apps/plugin-opener");
+  await openUrl(url);
 }
 
 // ─── Version history (app data dir, per project) ────────────────────
