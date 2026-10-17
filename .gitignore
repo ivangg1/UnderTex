@@ -39,3 +39,5 @@ yarn-debug.log*
 
 # Temporary AI instructions
 CLAUDE.md
+PROMPT_*.md
+
