@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
 import { documentDir } from "@tauri-apps/api/path";
 
@@ -77,6 +77,7 @@ import {
   type SaveState,
 } from "./services/collabManager";
 import { parseLatexLog, type LatexDiagnostic } from "./services/latexLog";
+import { EMPTY_ASSET_STATUS, explainMissingAsset, type AssetSyncStatus } from "./services/assetSync";
 import { addRecent, readRecents, removeRecent, type RecentProject } from "./services/recents";
 import { findTemplate } from "./services/templates";
 import { useI18n, type MessageKey } from "./i18n";
@@ -223,6 +224,7 @@ function App() {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("disconnected");
   const [diagnostics, setDiagnostics] = useState<ConnectionDiagnostics | null>(null);
   const [saveState, setSaveState] = useState<SaveState>(IDLE_SAVE);
+  const [assets, setAssets] = useState<AssetSyncStatus>(EMPTY_ASSET_STATUS);
 
   // ─── Compiler ───────────────────────────────────────────────────
   const [compilerInfo, setCompilerInfo] = useState<CompilerInfo | null>(null);
@@ -338,7 +340,9 @@ function App() {
     setCompileQuiet(auto);
     try {
       await manager.flushSave();
-      const result = await compileLatex(current.path, current.mainFile, text, options);
+      // In a room, files received from peers fill in what the project folder lacks.
+      const roomId = manager.mode === "collab" ? manager.roomId : null;
+      const result = await compileLatex(current.path, current.mainFile, text, options, undefined, roomId);
       const parsed = parseLatexLog(result.logs);
       let pdfData: Uint8Array | null = null;
       if (result.pdf_path) {
@@ -582,6 +586,7 @@ function App() {
           },
           onRoomIdChange: setRoomId,
           onSaveStateChange: setSaveState,
+          onAssetsChange: setAssets,
           onRoomInfoChange: setRoomInfo,
         },
       });
@@ -607,6 +612,7 @@ function App() {
       setConnectionStatus(manager.status);
       setDiagnostics(manager.diagnostics);
       setSaveState(manager.saveState);
+      setAssets(manager.assets);
       setRoomInfo(manager.getRoomInfo());
       setCloudAssist({ kind: "none" });
       setCompile(EMPTY_COMPILE);
@@ -941,6 +947,39 @@ function App() {
     };
   }, []);
 
+  // ─── Room assets & build errors ─────────────────────────────────
+  // A failed build whose missing file is shared in the room but not here yet.
+  const assetHint = useMemo(
+    () => (compile.summary && !compile.summary.success && compile.logs ? explainMissingAsset(compile.logs, assets) : null),
+    [compile.summary, compile.logs, assets]
+  );
+  const assetNotice = assetHint
+    ? t(`assets.hint.${assetHint.state}` as MessageKey, {
+        path: assetHint.path,
+        mb: Math.round(assets.maxBytes / (1024 * 1024)),
+      })
+    : null;
+
+  // Build again (quietly) once files arrive after a failed build.
+  const prevSyncedRef = useRef(assets.synced);
+  const assetRebuildTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const grew = assets.synced > prevSyncedRef.current;
+    prevSyncedRef.current = assets.synced;
+    if (!grew || !lastCompiledRef.current || lastCompiledRef.current.success) return;
+    if (assetRebuildTimer.current) clearTimeout(assetRebuildTimer.current);
+    assetRebuildTimer.current = setTimeout(() => {
+      assetRebuildTimer.current = null;
+      void runCompile({ auto: true });
+    }, 600);
+  }, [assets.synced, runCompile]);
+  useEffect(
+    () => () => {
+      if (assetRebuildTimer.current) clearTimeout(assetRebuildTimer.current);
+    },
+    []
+  );
+
   // ─── Panels ─────────────────────────────────────────────────────
   let panelTitle = "";
   let panelContent: React.ReactNode = null;
@@ -953,6 +992,7 @@ function App() {
         peers={peers}
         status={connectionStatus}
         diagnostics={diagnostics}
+        assets={assets}
         cloud={project?.cloud ?? null}
         roomCloud={roomCloud}
         isWorkspace={inWorkspace}
@@ -1125,6 +1165,7 @@ function App() {
                   diagnostics={compile.diagnostics}
                   summary={compile.summary}
                   fatalError={compile.fatalError}
+                  notice={assetNotice}
                   isCompiling={isCompiling}
                   quietCompile={compileQuiet}
                   canExport={canExport}

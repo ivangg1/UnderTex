@@ -52,6 +52,8 @@ interface PdfPreviewProps {
   summary: CompileSummary | null;
   /** Infrastructure error (no compiler, IPC failure…), distinct from LaTeX errors. */
   fatalError: string | null;
+  /** Plain-language explanation of a failed build (e.g. a room file still downloading). */
+  notice?: string | null;
   isCompiling: boolean;
   /** Hide the "compiling" overlay (automatic background builds). */
   quietCompile?: boolean;
@@ -80,6 +82,7 @@ export default function PdfPreview({
   diagnostics,
   summary,
   fatalError,
+  notice = null,
   isCompiling,
   quietCompile = false,
   canExport,
@@ -352,7 +355,7 @@ export default function PdfPreview({
           <div className="h-full flex flex-col items-center justify-center p-6 text-center">
             <AlertCircle size={40} className="text-mk-red mb-2" strokeWidth={1.5} />
             <h3 className="text-sm font-semibold text-mk-fg mb-1">{t("preview.error.title")}</h3>
-            <p className="text-xs text-mk-fg3 max-w-md">{t("preview.error.body")}</p>
+            <p className="text-xs text-mk-fg3 max-w-md">{notice ?? t("preview.error.body")}</p>
           </div>
         ) : (
           <div className="h-full flex flex-col items-center justify-center text-mk-fg4 gap-3 select-none">
@@ -365,6 +368,14 @@ export default function PdfPreview({
           </div>
         )}
       </div>
+
+      {/* Why the build failed, in plain words (shown over the last good PDF too) */}
+      {notice && summary && !summary.success && !isCompiling && (
+        <div className="flex items-start gap-2 px-3 py-2 border-t border-mk-orange/40 bg-mk-orange/10 text-[11px] text-mk-fg2 leading-relaxed shrink-0">
+          <AlertTriangle size={13} className="shrink-0 mt-0.5 text-mk-orange" />
+          <span>{notice}</span>
+        </div>
+      )}
 
       {/* Diagnostics + logs drawer */}
       {hasDrawer && (

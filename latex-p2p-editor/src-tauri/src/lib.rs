@@ -3,8 +3,11 @@
 //! Modules:
 //! * [`project`]  – project folder, root-file detection, `.texcollab/` metadata, atomic saves.
 //! * [`compiler`] – cross-platform engine discovery and the cached local compile pipeline.
+//! * [`assets`]   – project asset listing (path, size, SHA-256) and the per-room cache of
+//!   files received from peers.
 //! * [`fsutil`]   – atomic writes and path validation.
 
+mod assets;
 mod cloud;
 mod compiler;
 mod fsutil;
@@ -18,6 +21,7 @@ use std::time::Duration;
 
 use tauri::{Emitter, Manager, WindowEvent};
 
+use assets::{AssetCache, AssetEntry};
 use cloud::CloudClient;
 use compiler::{BuildOptions, CompileOutput, CompilerInfo};
 use history::{HistoryStore, SaveOutcome, SnapshotMeta};
@@ -199,10 +203,103 @@ async fn detect_compiler() -> CompilerInfo {
         })
 }
 
+// ─── Project assets shared with peers ───────────────────────────────
+
+fn asset_cache(app: &tauri::AppHandle, room_id: &str, project_path: &str) -> Result<AssetCache, String> {
+    let base = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("App data directory unavailable: {e}"))?
+        .join("asset-cache");
+    Ok(AssetCache::for_room(&base, room_id, project_path))
+}
+
+/// Files of the project a build may need (everything but the root file), with
+/// size and SHA-256. Hashes are memoized by size + mtime.
+#[tauri::command]
+async fn asset_list(project_path: String, main_file: String) -> Result<Vec<AssetEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || assets::list_project_assets(std::path::Path::new(&project_path), &main_file))
+        .await
+        .map_err(|e| format!("Asset task panicked: {e}"))?
+}
+
+/// Reads one chunk of an asset (project folder first, then the room cache) as a
+/// binary IPC response, to send it to a peer.
+#[tauri::command]
+async fn asset_read_chunk(
+    app: tauri::AppHandle,
+    project_path: String,
+    room_id: Option<String>,
+    path: String,
+    offset: u64,
+    length: u64,
+) -> Result<tauri::ipc::Response, String> {
+    let cache = room_id.map(|r| asset_cache(&app, &r, &project_path)).transpose()?;
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        assets::read_chunk(std::path::Path::new(&project_path), cache.as_ref(), &path, offset, length)
+    })
+    .await
+    .map_err(|e| format!("Asset task panicked: {e}"))??;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+/// Files of a room's cache (received from peers).
+#[tauri::command]
+async fn asset_cache_list(app: tauri::AppHandle, project_path: String, room_id: String) -> Result<Vec<AssetEntry>, String> {
+    let cache = asset_cache(&app, &room_id, &project_path)?;
+    tauri::async_runtime::spawn_blocking(move || cache.list())
+        .await
+        .map_err(|e| format!("Asset task panicked: {e}"))
+}
+
+fn header(request: &tauri::ipc::Request<'_>, name: &str) -> Result<String, String> {
+    let raw = request
+        .headers()
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| format!("Missing header {name}"))?;
+    assets::percent_decode(raw)
+}
+
+/// Stores a downloaded asset in the room cache. The raw request body is the file;
+/// `x-project-path`, `x-room-id`, `x-asset-path` and `x-asset-hash` (URI-encoded)
+/// describe it. The
+/// content is verified against the hash before it is kept.
+#[tauri::command]
+async fn asset_cache_store(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> Result<AssetEntry, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("Expected a binary body".to_string());
+    };
+    let bytes = bytes.clone();
+    let project_path = header(&request, "x-project-path")?;
+    let room_id = header(&request, "x-room-id")?;
+    let path = header(&request, "x-asset-path")?;
+    let hash = header(&request, "x-asset-hash")?;
+    let cache = asset_cache(&app, &room_id, &project_path)?;
+    tauri::async_runtime::spawn_blocking(move || cache.store(&path, &hash, &bytes))
+        .await
+        .map_err(|e| format!("Asset task panicked: {e}"))?
+}
+
+/// Drops cached files that are not in `keep` (removed or changed in the room).
+#[tauri::command]
+async fn asset_cache_prune(
+    app: tauri::AppHandle,
+    project_path: String,
+    room_id: String,
+    keep: Vec<AssetEntry>,
+) -> Result<usize, String> {
+    let cache = asset_cache(&app, &room_id, &project_path)?;
+    tauri::async_runtime::spawn_blocking(move || cache.prune(&keep))
+        .await
+        .map_err(|e| format!("Asset task panicked: {e}"))?
+}
+
 /// Compile the in-memory TeX source inside the per-project build cache. Runs on a
 /// blocking thread so the UI stays responsive during long builds. `options`
 /// selects the active-chapter / draft / precompiled-preamble shortcuts (all off by
-/// default, which is also what Export uses).
+/// default, which is also what Export uses). `room_id` merges that room's asset
+/// cache (files received from peers) underneath the project's own files.
 #[tauri::command]
 async fn compile_latex(
     project_path: String,
@@ -210,11 +307,15 @@ async fn compile_latex(
     tex_content: String,
     timeout_secs: Option<u64>,
     options: Option<BuildOptions>,
+    room_id: Option<String>,
+    app: tauri::AppHandle,
 ) -> Result<CompileOutput, String> {
     let timeout = timeout_secs.map(Duration::from_secs).unwrap_or(compiler::DEFAULT_TIMEOUT);
     let options = options.unwrap_or_default();
+    // In a room, files received from peers fill in what the project folder lacks.
+    let overlay = room_id.map(|r| asset_cache(&app, &r, &project_path)).transpose()?.map(|c| c.files_dir());
     tauri::async_runtime::spawn_blocking(move || {
-        compiler::compile(&project_path, &main_file, &tex_content, &options, timeout)
+        compiler::compile_with_assets(&project_path, &main_file, &tex_content, &options, timeout, overlay.as_deref())
     })
     .await
     .map_err(|e| format!("Compile task panicked: {e}"))?
@@ -305,6 +406,11 @@ pub fn run() {
             detect_compiler,
             compile_latex,
             read_build_file,
+            asset_list,
+            asset_read_chunk,
+            asset_cache_list,
+            asset_cache_store,
+            asset_cache_prune,
             export_pdf,
             open_new_window,
             close_window,

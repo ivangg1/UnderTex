@@ -24,7 +24,8 @@ jobs:
         run: npm run build
 
   backend:
-    runs-on: ubuntu-22.04
+    # 24.04: the Tectonic binary from drop-sh needs glibc >= 2.39 (22.04 has 2.35).
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

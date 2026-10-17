@@ -384,6 +384,9 @@ pub fn build_dir_for(project_path: &str) -> PathBuf {
 struct AssetRecord {
     len: u64,
     mtime_ms: u128,
+    /// Copied from the room's asset cache rather than the project folder.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    cached: bool,
 }
 
 type Manifest = BTreeMap<String, AssetRecord>;
@@ -393,9 +396,16 @@ pub struct SyncStats {
     pub copied: usize,
     pub unchanged: usize,
     pub removed: usize,
+    /// Assets taken from the room cache (received from peers) because the project
+    /// folder does not have them.
+    pub from_cache: usize,
 }
 
-fn is_artifact(name: &str) -> bool {
+pub(crate) fn is_skipped_dir(name: &str) -> bool {
+    SKIPPED_DIRS.contains(&name)
+}
+
+pub(crate) fn is_artifact(name: &str) -> bool {
     let lower = name.to_lowercase();
     ARTIFACT_EXTENSIONS.iter().any(|ext| lower.ends_with(&format!(".{ext}")))
 }
@@ -407,10 +417,10 @@ fn record_for(meta: &fs::Metadata) -> AssetRecord {
         .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    AssetRecord { len: meta.len(), mtime_ms }
+    AssetRecord { len: meta.len(), mtime_ms, cached: false }
 }
 
-fn walk_assets(root: &Path, dir: &Path, exclude: &Path, out: &mut Vec<(String, PathBuf, fs::Metadata)>) -> io::Result<()> {
+pub(crate) fn walk_assets(root: &Path, dir: &Path, exclude: &Path, out: &mut Vec<(String, PathBuf, fs::Metadata)>) -> io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -439,7 +449,9 @@ fn walk_assets(root: &Path, dir: &Path, exclude: &Path, out: &mut Vec<(String, P
 /// files that were previously synced but no longer exist in the project. Build
 /// artifacts already in `dst` are left alone so the engine can reuse them.
 /// `exclude_main` is the root TeX file, which is written from memory instead.
-pub fn sync_assets(src: &Path, dst: &Path, exclude_main: &Path) -> io::Result<SyncStats> {
+/// `overlay` is the room's asset cache: its files fill in whatever the project
+/// folder lacks; a local file with the same path always wins.
+pub fn sync_assets(src: &Path, dst: &Path, exclude_main: &Path, overlay: Option<&Path>) -> io::Result<SyncStats> {
     fs::create_dir_all(dst)?;
     let manifest_path = dst.join(MANIFEST_FILE);
     let previous: Manifest = fs::read_to_string(&manifest_path)
@@ -452,10 +464,28 @@ pub fn sync_assets(src: &Path, dst: &Path, exclude_main: &Path) -> io::Result<Sy
         walk_assets(src, src, exclude_main, &mut assets)?;
     }
 
+    let mut sources: Vec<(String, PathBuf, fs::Metadata, bool)> =
+        assets.into_iter().map(|(rel, path, meta)| (rel, path, meta, false)).collect();
+    if let Some(cache) = overlay.filter(|c| c.is_dir()) {
+        let local: std::collections::HashSet<String> = sources.iter().map(|(rel, ..)| rel.clone()).collect();
+        let main_rel = exclude_main.strip_prefix(src).unwrap_or(exclude_main);
+        let mut cached = Vec::new();
+        walk_assets(cache, cache, &cache.join(main_rel), &mut cached)?;
+        sources.extend(
+            cached
+                .into_iter()
+                .filter(|(rel, ..)| !local.contains(rel))
+                .map(|(rel, path, meta)| (rel, path, meta, true)),
+        );
+    }
+
     let mut stats = SyncStats::default();
     let mut next: Manifest = BTreeMap::new();
-    for (rel, path, meta) in assets {
-        let record = record_for(&meta);
+    for (rel, path, meta, from_cache) in sources {
+        let record = AssetRecord { cached: from_cache, ..record_for(&meta) };
+        if from_cache {
+            stats.from_cache += 1;
+        }
         let target = dst.join(&rel);
         let unchanged = previous.get(&rel) == Some(&record) && target.is_file();
         if unchanged {
@@ -820,16 +850,31 @@ fn run_engine_passes(
     Ok(passes)
 }
 
-/// Compiles `tex_content` as `main_file` of the project at `project_path`.
-///
-/// Returns `Err` only for infrastructure problems (no engine installed, I/O errors).
-/// LaTeX errors are reported through `CompileOutput { success: false, logs, .. }`.
+/// [`compile_with_assets`] without a room asset cache.
+#[cfg(test)]
 pub fn compile(
     project_path: &str,
     main_file: &str,
     tex_content: &str,
     options: &BuildOptions,
     timeout: Duration,
+) -> Result<CompileOutput, String> {
+    compile_with_assets(project_path, main_file, tex_content, options, timeout, None)
+}
+
+/// Compiles `tex_content` as `main_file` of the project at `project_path`.
+/// `asset_cache` is the room's cache of files received from peers; it is merged
+/// into the build directory underneath the project's own files.
+///
+/// Returns `Err` only for infrastructure problems (no engine installed, I/O errors).
+/// LaTeX errors are reported through `CompileOutput { success: false, logs, .. }`.
+pub fn compile_with_assets(
+    project_path: &str,
+    main_file: &str,
+    tex_content: &str,
+    options: &BuildOptions,
+    timeout: Duration,
+    asset_cache: Option<&Path>,
 ) -> Result<CompileOutput, String> {
     let (engine, exe) = find_engine().ok_or_else(install_hint)?;
 
@@ -852,7 +897,7 @@ pub fn compile(
     let pdf_path = main_dir.join(format!("{stem}.pdf"));
 
     let started = Instant::now();
-    let stats = sync_assets(&project_dir, &build_dir, &project_main)
+    let stats = sync_assets(&project_dir, &build_dir, &project_main, asset_cache)
         .map_err(|e| format!("Failed to sync project assets into build cache: {e}"))?;
     fs::create_dir_all(&main_dir).map_err(|e| format!("Failed to create build directory: {e}"))?;
 
@@ -961,7 +1006,7 @@ pub fn compile(
     let duration_ms = started.elapsed().as_millis() as u64;
     let mode = if chapter.is_some() { "chapter" } else { "full" };
     let mut logs = format!(
-        "Compiler: {} ({})\nStatus: {}{}\nBuild cache: {}\nAssets: {} copied, {} unchanged, {} removed\nMode: {}{}\nDraft: {}\nPreamble: {}\nPasses: {}\nDuration: {} ms\n",
+        "Compiler: {} ({})\nStatus: {}{}\nBuild cache: {}\nAssets: {} copied, {} unchanged, {} removed, {} from peers\nMode: {}{}\nDraft: {}\nPreamble: {}\nPasses: {}\nDuration: {} ms\n",
         engine.binary(),
         exe.display(),
         last.status,
@@ -970,6 +1015,7 @@ pub fn compile(
         stats.copied,
         stats.unchanged,
         stats.removed,
+        stats.from_cache,
         mode,
         chapter.as_deref().map(|c| format!(" ({c})")).unwrap_or_default(),
         if draft { "on" } else { "off" },
@@ -1093,8 +1139,8 @@ mod tests {
         fs::write(src.join(".git/secret"), b"s").unwrap();
         fs::write(src.join("node_modules/x/index.js"), b"js").unwrap();
 
-        let first = sync_assets(&src, &dst, &src.join("main.tex")).unwrap();
-        assert_eq!(first, SyncStats { copied: 3, unchanged: 0, removed: 0 });
+        let first = sync_assets(&src, &dst, &src.join("main.tex"), None).unwrap();
+        assert_eq!(first, SyncStats { copied: 3, unchanged: 0, removed: 0, from_cache: 0 });
         assert!(dst.join("figures/plot.png").exists());
         assert!(dst.join("macros.sty").exists());
         assert!(dst.join("refs.bib").exists());
@@ -1103,8 +1149,8 @@ mod tests {
         }
 
         // Second run with nothing changed: zero copies.
-        let second = sync_assets(&src, &dst, &src.join("main.tex")).unwrap();
-        assert_eq!(second, SyncStats { copied: 0, unchanged: 3, removed: 0 });
+        let second = sync_assets(&src, &dst, &src.join("main.tex"), None).unwrap();
+        assert_eq!(second, SyncStats { copied: 0, unchanged: 3, removed: 0, from_cache: 0 });
 
         // Artifacts produced by the engine inside the cache must survive a sync.
         fs::write(dst.join("main.aux"), b"engine output").unwrap();
@@ -1113,8 +1159,8 @@ mod tests {
         // Change one asset (content + size) and delete another.
         fs::write(src.join("macros.sty"), b"sty v2 longer").unwrap();
         fs::remove_file(src.join("refs.bib")).unwrap();
-        let third = sync_assets(&src, &dst, &src.join("main.tex")).unwrap();
-        assert_eq!(third, SyncStats { copied: 1, unchanged: 1, removed: 1 });
+        let third = sync_assets(&src, &dst, &src.join("main.tex"), None).unwrap();
+        assert_eq!(third, SyncStats { copied: 1, unchanged: 1, removed: 1, from_cache: 0 });
         assert_eq!(fs::read(dst.join("macros.sty")).unwrap(), b"sty v2 longer");
         assert!(!dst.join("refs.bib").exists(), "deleted asset must be removed from the cache");
         assert!(dst.join("main.aux").exists());
@@ -1122,6 +1168,44 @@ mod tests {
 
         let _ = fs::remove_dir_all(&src);
         let _ = fs::remove_dir_all(&dst);
+    }
+
+    #[test]
+    fn sync_assets_merges_the_room_cache_under_local_files() {
+        let src = temp_dir("overlay_src");
+        let cache = temp_dir("overlay_cache");
+        let dst = temp_dir("overlay_dst");
+        fs::write(src.join("main.tex"), b"root").unwrap();
+        fs::write(src.join("refs.bib"), b"local bib").unwrap();
+        fs::create_dir_all(cache.join("imagenes")).unwrap();
+        fs::write(cache.join("imagenes/logoUMA.png"), b"from peer").unwrap();
+        fs::write(cache.join("refs.bib"), b"peer bib").unwrap();
+        fs::write(cache.join("main.tex"), b"never used").unwrap();
+
+        let first = sync_assets(&src, &dst, &src.join("main.tex"), Some(&cache)).unwrap();
+        assert_eq!(first, SyncStats { copied: 2, unchanged: 0, removed: 0, from_cache: 1 });
+        assert_eq!(fs::read(dst.join("imagenes/logoUMA.png")).unwrap(), b"from peer");
+        assert_eq!(fs::read(dst.join("refs.bib")).unwrap(), b"local bib", "local files take precedence");
+        assert!(!dst.join("main.tex").exists(), "the root file is never taken from the cache");
+
+        // Unchanged second run; then the user drops their own copy of the logo in the project.
+        let second = sync_assets(&src, &dst, &src.join("main.tex"), Some(&cache)).unwrap();
+        assert_eq!(second, SyncStats { copied: 0, unchanged: 2, removed: 0, from_cache: 1 });
+        fs::create_dir_all(src.join("imagenes")).unwrap();
+        fs::write(src.join("imagenes/logoUMA.png"), b"mine").unwrap();
+        let third = sync_assets(&src, &dst, &src.join("main.tex"), Some(&cache)).unwrap();
+        assert_eq!(third, SyncStats { copied: 1, unchanged: 1, removed: 0, from_cache: 0 });
+        assert_eq!(fs::read(dst.join("imagenes/logoUMA.png")).unwrap(), b"mine");
+
+        // Leaving the room (no overlay) drops the files that only came from peers.
+        fs::remove_file(src.join("imagenes/logoUMA.png")).unwrap();
+        let fourth = sync_assets(&src, &dst, &src.join("main.tex"), None).unwrap();
+        assert_eq!(fourth.removed, 1);
+        assert!(!dst.join("imagenes/logoUMA.png").exists());
+
+        for d in [&src, &cache, &dst] {
+            let _ = fs::remove_dir_all(d);
+        }
     }
 
     #[test]
@@ -1451,6 +1535,32 @@ mod tests {
         }
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(build_dir_for(project));
+    }
+
+    #[test]
+    fn compile_uses_chapters_received_from_peers_when_the_project_folder_lacks_them() {
+        if !engine_available() {
+            eprintln!("skipping: no LaTeX engine installed");
+            return;
+        }
+        let project = temp_dir("guest_project");
+        let cache = temp_dir("guest_cache");
+        let tex = "\\documentclass{article}\n\\begin{document}\n\\input{chapters/shared}\n\\end{document}\n";
+        fs::write(project.join("main.tex"), tex).unwrap();
+
+        let missing = compile(project.to_str().unwrap(), "main.tex", tex, &BuildOptions::default(), DEFAULT_TIMEOUT).unwrap();
+        assert!(!missing.success, "without the chapter the build must fail");
+
+        fs::create_dir_all(cache.join("chapters")).unwrap();
+        fs::write(cache.join("chapters/shared.tex"), "Text that only the host had.\n").unwrap();
+        let out = compile_with_assets(project.to_str().unwrap(), "main.tex", tex, &BuildOptions::default(), DEFAULT_TIMEOUT, Some(&cache)).unwrap();
+        assert!(out.success, "{}", out.logs);
+        assert!(out.logs.contains("1 from peers"), "{}", out.logs);
+        assert!(!project.join("chapters").exists(), "the project folder must stay untouched");
+
+        let _ = fs::remove_dir_all(build_dir_for(project.to_str().unwrap()));
+        let _ = fs::remove_dir_all(&project);
+        let _ = fs::remove_dir_all(&cache);
     }
 
     #[test]

@@ -252,15 +252,21 @@ export async function detectCompiler(): Promise<CompilerInfo> {
   return invoke<CompilerInfo>("detect_compiler");
 }
 
-/** Compiles in the per-project build cache. LaTeX errors come back as `success: false`. */
+/**
+ * Compiles in the per-project build cache. LaTeX errors come back as `success: false`.
+ * With a `roomId`, files received from peers (the room's asset cache) fill in what
+ * the project folder lacks.
+ */
 export async function compileLatex(
   projectPath: string,
   mainFile: string,
   texContent: string,
   options: BuildOptions = {},
-  timeoutSecs?: number
+  timeoutSecs?: number,
+  roomId?: string | null
 ): Promise<CompileOutput> {
   return invoke<CompileOutput>("compile_latex", {
+    roomId: roomId ?? null,
     projectPath,
     mainFile,
     texContent,
@@ -271,6 +277,59 @@ export async function compileLatex(
       precompiledPreamble: options.precompiledPreamble ?? false,
     },
   });
+}
+
+// ─── Project assets shared with peers ─────────────────────────────
+
+/** A shareable project file: `/`-separated relative path, size and SHA-256 (hex). */
+export interface AssetEntry {
+  path: string;
+  size: number;
+  hash: string;
+}
+
+/** Lists the project's shareable files (everything a build may need but the root file). */
+export async function assetList(projectPath: string, mainFile: string): Promise<AssetEntry[]> {
+  return invoke<AssetEntry[]>("asset_list", { projectPath, mainFile });
+}
+
+/** Reads a byte range of an asset from the project folder, or from the room cache. */
+export async function assetReadChunk(
+  projectPath: string,
+  roomId: string | null,
+  path: string,
+  offset: number,
+  length: number
+): Promise<Uint8Array> {
+  const buffer = await invoke<ArrayBuffer>("asset_read_chunk", { projectPath, roomId, path, offset, length });
+  return new Uint8Array(buffer);
+}
+
+/** Files of a room's asset cache (received from peers) for this project folder. */
+export async function assetCacheList(projectPath: string, roomId: string): Promise<AssetEntry[]> {
+  return invoke<AssetEntry[]>("asset_cache_list", { projectPath, roomId });
+}
+
+/** Stores a downloaded asset in the room cache; the backend checks the hash. */
+export async function assetCacheStore(
+  projectPath: string,
+  roomId: string,
+  entry: AssetEntry,
+  bytes: Uint8Array
+): Promise<AssetEntry> {
+  return invoke<AssetEntry>("asset_cache_store", bytes, {
+    headers: {
+      "x-project-path": encodeURIComponent(projectPath),
+      "x-room-id": encodeURIComponent(roomId),
+      "x-asset-path": encodeURIComponent(entry.path),
+      "x-asset-hash": encodeURIComponent(entry.hash),
+    },
+  });
+}
+
+/** Deletes cached files that are not in `keep`. Returns how many were removed. */
+export async function assetCachePrune(projectPath: string, roomId: string, keep: AssetEntry[]): Promise<number> {
+  return invoke<number>("asset_cache_prune", { projectPath, roomId, keep });
 }
 
 /** Reads a file from the build cache as raw bytes (binary IPC, no JSON arrays). */

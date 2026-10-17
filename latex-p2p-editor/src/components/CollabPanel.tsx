@@ -1,9 +1,10 @@
 // Room panel: room ID, invite, peers, connection diagnostics, disconnect.
 
 import { useState } from "react";
-import { Check, Cloud, Copy, Crown, HardDrive, Info, Share2, User, WifiOff, AlertTriangle } from "lucide-react";
+import { Check, Cloud, Copy, Crown, HardDrive, Info, Share2, User, WifiOff, AlertTriangle, Files, Upload } from "lucide-react";
 import { useI18n } from "../i18n";
 import type { ConnectionDiagnostics, ConnectionStatus, PeerInfo } from "../services/collabManager";
+import type { AssetSyncStatus } from "../services/assetSync";
 import { connectionLabel } from "./ConnectionBadge";
 import type { CloudLocation } from "../services/tauriBridge";
 import { cloudLabel, isCloud } from "../services/cloud";
@@ -14,6 +15,7 @@ interface CollabPanelProps {
   peers: PeerInfo[];
   status: ConnectionStatus;
   diagnostics: ConnectionDiagnostics | null;
+  assets: AssetSyncStatus;
   /** Where the open project folder lives (null when unknown). */
   cloud: CloudLocation | null;
   /** Cloud location published by the host (what guests should sync). */
@@ -36,7 +38,89 @@ async function copyText(text: string): Promise<boolean> {
 const SECTION = "px-4 py-3 border-b border-mk-bg3 flex flex-col gap-2";
 const LABEL = "text-[10px] uppercase tracking-widest text-mk-fg4 font-semibold";
 
-export default function CollabPanel({ roomId, isHost, peers, status, diagnostics, cloud, roomCloud, isWorkspace = false, onStopCollab }: CollabPanelProps) {
+const mb = (bytes: number) => Math.round(bytes / (1024 * 1024));
+
+/** Shared project files: how many are here, what is on its way, what cannot come. */
+function AssetsSection({ assets }: { assets: AssetSyncStatus }) {
+  const { t } = useI18n();
+  const missing = assets.items.filter((i) => i.state !== "local" && i.state !== "cached");
+  const dl = assets.downloading;
+  const percent = dl && dl.size > 0 ? Math.floor((dl.received / dl.size) * 100) : 0;
+  return (
+    <div className={SECTION}>
+      <div className="flex items-center justify-between">
+        <span className={LABEL}>{t("assets.title")}</span>
+        {assets.total > 0 && (
+          <span className={`text-[10px] font-medium ${assets.missing === 0 ? "text-mk-green" : "text-mk-fg3"}`}>
+            {t("assets.summary", { synced: assets.synced, total: assets.total })}
+          </span>
+        )}
+      </div>
+      {assets.total === 0 ? (
+        <p className="text-[11px] text-mk-fg4">{t("assets.none")}</p>
+      ) : (
+        <div className="h-1 bg-mk-bg3">
+          <div className="h-full bg-mk-green transition-all" style={{ width: `${(assets.synced / assets.total) * 100}%` }} />
+        </div>
+      )}
+      {dl && (
+        <div className="flex flex-col gap-1">
+          <span className="flex items-center gap-1.5 text-[11px] text-mk-fg2 truncate" title={dl.path}>
+            <Files size={12} className="shrink-0 text-mk-blue" />
+            {t("assets.receiving", { path: dl.path, percent })}
+          </span>
+          <div className="h-1 bg-mk-bg3">
+            <div className="h-full bg-mk-blue transition-all" style={{ width: `${percent}%` }} />
+          </div>
+        </div>
+      )}
+      {assets.uploading > 0 && (
+        <span className="flex items-center gap-1.5 text-[11px] text-mk-fg3">
+          <Upload size={12} className="shrink-0" />
+          {t("assets.sending", { count: assets.uploading })}
+        </span>
+      )}
+      {assets.unavailable > 0 && (
+        <p className="flex gap-1.5 text-[11px] text-mk-orange leading-relaxed">
+          <AlertTriangle size={12} className="shrink-0 mt-0.5" />
+          {t("assets.unavailable", { count: assets.unavailable })}
+        </p>
+      )}
+      {assets.tooLarge > 0 && (
+        <p className="flex gap-1.5 text-[11px] text-mk-orange leading-relaxed">
+          <AlertTriangle size={12} className="shrink-0 mt-0.5" />
+          {t("assets.tooLarge", { count: assets.tooLarge, mb: mb(assets.maxBytes) })}
+        </p>
+      )}
+      {missing.length > 0 && (
+        <ul className="font-mono text-[10px] text-mk-fg3 flex flex-col gap-0.5 max-h-28 overflow-y-auto">
+          {missing.map((item) => (
+            <li key={item.path} className="flex gap-2">
+              <span className="truncate" title={item.path}>
+                {item.path}
+              </span>
+              <span className="ml-auto shrink-0 text-mk-fg4">{t(`assets.state.${item.state as "queued"}`)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="text-[11px] text-mk-fg4 leading-relaxed">{t("assets.help")}</p>
+    </div>
+  );
+}
+
+export default function CollabPanel({
+  roomId,
+  isHost,
+  peers,
+  status,
+  diagnostics,
+  assets,
+  cloud,
+  roomCloud,
+  isWorkspace = false,
+  onStopCollab,
+}: CollabPanelProps) {
   const { t, locale } = useI18n();
   const [copied, setCopied] = useState<"id" | "invite" | null>(null);
 
@@ -135,6 +219,7 @@ export default function CollabPanel({ roomId, isHost, peers, status, diagnostics
         )}
       </div>
 
+      <AssetsSection assets={assets} />
       {cloud && (
         <div className={SECTION}>
           <span className={LABEL}>{t("collab.files")}</span>

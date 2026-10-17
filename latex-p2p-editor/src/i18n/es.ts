@@ -77,7 +77,8 @@ export const es: Record<keyof typeof en, string> = {
 
   // ─── Unirse ─────────────────────────────────────────────────────
   "join.title": "Unirse a una sala",
-  "join.help": "Pega el ID de sala. Elegirás una carpeta local donde se guarda el proyecto cuando seas el Host.",
+  "join.help":
+    "Pega el ID de sala. Elegirás una carpeta local donde se guarda el proyecto cuando seas el Host (puede estar vacía: la sala te envía los archivos que necesita la compilación).",
   "join.placeholder": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "join.submit": "Unirse",
 
@@ -87,7 +88,7 @@ export const es: Record<keyof typeof en, string> = {
   "collab.inviteButton": "Copiar mensaje de invitación",
   "collab.copyId": "Copiar ID",
   "collab.invite":
-    "Invita a tu equipo: comparte la carpeta por tu nube (Drive, iCloud, OneDrive…) o envíales este ID para usar “Unirse”.",
+    "Invita a tu equipo: envíales este ID para usar “Unirse”. Las imágenes, la bibliografía y los capítulos les llegan por la sala, sin carpeta compartida.",
   "collab.peers": "Compañeros ({count})",
   "collab.hostWrites": "Host · escribe en disco",
   "collab.guestRam": "Invitado · en memoria",
@@ -104,6 +105,28 @@ export const es: Record<keyof typeof en, string> = {
   "cloud.provider.local": "Carpeta local",
   "collab.disconnect": "Desconectar y trabajar solo",
   "collab.disconnect.tip": "Cerrar WebRTC y volver al modo individual",
+
+  // ─── Archivos del proyecto compartidos por la sala ──────────────
+  "assets.title": "Archivos del proyecto",
+  "assets.summary": "{synced} de {total} disponibles",
+  "assets.none": "Aún no hay archivos compartidos (imágenes, .bib, capítulos…).",
+  "assets.receiving": "Recibiendo {path} · {percent}%",
+  "assets.sending": "Enviando {count} archivo(s) a compañeros",
+  "assets.unavailable": "{count} archivo(s) solo están en un compañero desconectado.",
+  "assets.tooLarge": "{count} archivo(s) superan el límite de {mb} MB; cópialos en tu carpeta.",
+  "assets.help":
+    "Las imágenes, la bibliografía y los capítulos de \\input llegan de los compañeros que los tienen. Lo recibido queda en la caché de la app, nunca en tu carpeta, y tus propios archivos siempre tienen prioridad.",
+  "assets.state.downloading": "recibiendo",
+  "assets.state.queued": "en cola",
+  "assets.state.unavailable": "sin conexión",
+  "assets.state.tooLarge": "demasiado grande",
+  "assets.state.failed": "reintentando",
+  "assets.hint.downloading": "“{path}” aún se está recibiendo de la sala. La compilación se repite en cuanto llegue.",
+  "assets.hint.queued": "“{path}” está en cola para recibirse de la sala. La compilación se repite en cuanto llegue.",
+  "assets.hint.failed": "“{path}” no se pudo recibir todavía y se está reintentando. La compilación se repite en cuanto llegue.",
+  "assets.hint.unavailable":
+    "“{path}” se comparte en esta sala, pero ningún compañero que lo tenga está conectado. Se descargará en cuanto el host se reconecte.",
+  "assets.hint.tooLarge": "“{path}” supera el límite de transferencia de {mb} MB. Cópialo en la carpeta del proyecto para compilar.",
 
   // ─── Perfil ─────────────────────────────────────────────────────
   "profile.title": "Perfil de colaboración",
