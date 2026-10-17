@@ -837,10 +837,10 @@ fn engine_command(engine: Engine, exe: &Path, file_name: &str, cwd: &Path) -> Co
     let mut cmd = Command::new(exe);
     match engine {
         Engine::Tectonic => {
-            cmd.args(["-X", "compile", "--keep-intermediates", "--keep-logs", file_name]);
+            cmd.args(["-X", "compile", "--keep-intermediates", "--keep-logs", "--synctex", file_name]);
         }
         Engine::PdfLatex => {
-            cmd.args(["-interaction=nonstopmode", "-file-line-error", "-synctex=0", file_name]);
+            cmd.args(["-interaction=nonstopmode", "-file-line-error", "-synctex=1", file_name]);
         }
     }
     cmd.current_dir(cwd);
@@ -867,6 +867,8 @@ fn run_engine_passes(
 ) -> Result<Vec<RunResult>, String> {
     fs::write(build_main, text).map_err(|e| format!("Failed to write TeX source to build cache: {e}"))?;
     // A stale PDF from a previous successful build must never be mistaken for this run's output.
+    // The SyncTeX map is left alone: when a build fails the preview keeps showing the
+    // last good PDF, and the map of that build is the one that matches it.
     let _ = fs::remove_file(pdf_path);
 
     let mut passes: Vec<RunResult> = Vec::new();

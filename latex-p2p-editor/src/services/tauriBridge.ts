@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import type { SynctexSource, SynctexTarget } from "./synctex";
 
 // ─── Types matching Rust structs ────────────────────────────────────
 
@@ -393,6 +394,33 @@ export async function assetCacheStore(
 /** Deletes cached files that are not in `keep`. Returns how many were removed. */
 export async function assetCachePrune(projectPath: string, roomId: string, keep: AssetEntry[]): Promise<number> {
   return invoke<number>("asset_cache_prune", { projectPath, roomId, keep });
+}
+
+// ─── SyncTeX navigation ──────────────────────────────────────────
+
+/**
+ * Inverse search: the project file and line typeset at `(x, y)` (PDF points from
+ * the page's top-left corner) of `page` in the last build of `mainFile`.
+ * `null` when nothing from the project is there.
+ */
+export async function synctexEdit(
+  projectPath: string,
+  mainFile: string,
+  page: number,
+  x: number,
+  y: number
+): Promise<SynctexSource | null> {
+  return invoke<SynctexSource | null>("synctex_edit", { projectPath, mainFile, page, x, y });
+}
+
+/** Forward search: where `file:line` (project-relative) was typeset; `null` if nowhere. */
+export async function synctexView(
+  projectPath: string,
+  mainFile: string,
+  file: string,
+  line: number
+): Promise<SynctexTarget | null> {
+  return invoke<SynctexTarget | null>("synctex_view", { projectPath, mainFile, file, line });
 }
 
 /** Reads a file from the build cache as raw bytes (binary IPC, no JSON arrays). */

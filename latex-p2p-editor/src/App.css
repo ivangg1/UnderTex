@@ -127,3 +127,19 @@ select option {
   z-index: 100;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
 }
+
+/* SyncTeX forward search: the typeset lines of the cursor's source line flash briefly. */
+.synctex-flash {
+  background: rgba(255, 216, 102, 0.35);
+  outline: 1px solid rgba(255, 216, 102, 0.9);
+  animation: synctex-flash 1.6s ease-out forwards;
+}
+@keyframes synctex-flash {
+  0%,
+  60% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
