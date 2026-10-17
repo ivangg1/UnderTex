@@ -61,6 +61,8 @@ interface PdfPreviewProps {
   canExport: boolean;
   hasProject?: boolean;
   onCompile?: () => void;
+  /** Tooltip of the Recompile button (says which build mode ⌘S / Recompile uses). */
+  compileTitle?: string;
   /** Project file a diagnostic points at (`null`: not a project file, e.g. a system package). */
   resolveFile: (diagnostic: LatexDiagnostic) => string | null;
   /** Opens `file` at `line` (another tab when it is not the open file). */
@@ -95,6 +97,7 @@ export default function PdfPreview({
   canExport,
   hasProject = true,
   onCompile,
+  compileTitle,
   resolveFile,
   onJump,
   problemsRequest = 0,
@@ -332,7 +335,7 @@ export default function PdfPreview({
             onClick={onCompile}
             disabled={!hasProject || isCompiling}
             className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-mk-green/15 hover:bg-mk-green/25 text-mk-green border border-mk-green/35 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer font-medium transition-colors"
-            title={t("preview.recompile.tip", { shortcut: shortcutLabel })}
+            title={compileTitle ?? t("preview.recompile.tip", { shortcut: shortcutLabel })}
           >
             {isCompiling ? (
               <Loader2 size={13} className="animate-spin text-mk-green" />
@@ -366,7 +369,7 @@ export default function PdfPreview({
       )}
 
       {/* Pages */}
-      <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto bg-[#1e1c1f]">
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto bg-mk-canvas">
         {doc && pageDims.length > 0 ? (
           <div className="flex flex-col items-center gap-4 py-4">
             {pageDims.map((dims, index) => {

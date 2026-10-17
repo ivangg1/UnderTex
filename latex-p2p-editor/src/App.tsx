@@ -101,6 +101,8 @@ import {
   type TreeNode,
 } from "./services/projectFiles";
 import { isMac, matchShortcut, shortcutLabel } from "./services/shortcuts";
+import { buildIndex, EMPTY_INDEX, type ProjectIndex } from "./services/references";
+import { useTheme } from "./services/theme";
 import { useI18n, type MessageKey } from "./i18n";
 import type * as Y from "yjs";
 import type { Awareness } from "y-protocols/awareness";
@@ -232,8 +234,13 @@ interface Banner {
   text: string;
 }
 
+/** Text files read for the reference index (labels, .bib entries). */
+const INDEXED_RE = /\.(tex|bib|sty|cls)$/i;
+const MAX_INDEXED_FILES = 500;
+
 function App() {
   const { t } = useI18n();
+  const [, resolvedTheme] = useTheme();
 
   // ─── Project & session ──────────────────────────────────────────
   const [project, setProject] = useState<ProjectInfo | null>(null);
@@ -906,6 +913,57 @@ function App() {
   const allFiles = useMemo(() => flattenFiles(tree), [tree]);
   const knownFiles = useMemo(() => new Set(allFiles), [allFiles]);
 
+  // ─── Reference index (smart completion, go to definition) ───────
+  // Disk copies of the project's .tex/.bib files, overlaid with the live text
+  // of every shared file; rebuilt lazily when something changed.
+  const diskTextsRef = useRef<Record<string, string>>({});
+  const indexVersionRef = useRef(0);
+  const indexCacheRef = useRef<{ version: number; index: ProjectIndex }>({ version: -1, index: EMPTY_INDEX });
+  const allFilesRef = useRef(allFiles);
+  allFilesRef.current = allFiles;
+  useEffect(() => {
+    const current = projectRef.current;
+    if (!current) {
+      diskTextsRef.current = {};
+      return;
+    }
+    let cancelled = false;
+    const wanted = allFiles.filter((f) => INDEXED_RE.test(f)).slice(0, MAX_INDEXED_FILES);
+    void Promise.all(
+      wanted.map((f) =>
+        readProjectFile(current.path, f)
+          .then((text) => [f, text] as const)
+          .catch(() => null)
+      )
+    ).then((entries) => {
+      if (cancelled || projectRef.current?.path !== current.path) return;
+      const next: Record<string, string> = {};
+      for (const e of entries) if (e) next[e[0]] = e[1];
+      diskTextsRef.current = next;
+      indexVersionRef.current++;
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [allFiles]);
+  useEffect(() => {
+    const manager = managerRef.current;
+    if (!manager || !project) return;
+    const bump = () => {
+      indexVersionRef.current++;
+    };
+    manager.doc.on("update", bump);
+    return () => manager.doc.off("update", bump);
+  }, [project?.path]); // eslint-disable-line react-hooks/exhaustive-deps
+  const getIndex = useCallback((): ProjectIndex => {
+    const cache = indexCacheRef.current;
+    if (cache.version === indexVersionRef.current) return cache.index;
+    const live = managerRef.current?.fileContents() ?? {};
+    const index = buildIndex({ ...diskTextsRef.current, ...live }, allFilesRef.current);
+    indexCacheRef.current = { version: indexVersionRef.current, index };
+    return index;
+  }, []);
+
   /** Changes the compiled root; in a room every peer follows. */
   const applyRootFile = useCallback(async (file: string, share: boolean) => {
     const current = projectRef.current;
@@ -1524,6 +1582,10 @@ function App() {
         initialAnchor={anchorsRef.current.get(session.path)}
         onCursorLine={setCursorLine}
         onLeave={(anchor) => anchorsRef.current.set(session.path, anchor)}
+        theme={resolvedTheme}
+        getIndex={getIndex}
+        rootFile={project?.rootFile}
+        onGoToDefinition={(def) => goTo(def.file, def.line)}
       />
     );
   } else if (opening) {
@@ -1569,12 +1631,10 @@ function App() {
         compilerName={compilerInfo?.name ?? null}
         chapters={chapters}
         buildSettings={buildSettings}
-        buildTitle={buildTitle}
         canExport={canExport}
         onChangeScope={handleChangeScope}
         onToggleDraft={handleToggleDraft}
         onTogglePreamble={handleTogglePreamble}
-        onCompile={handleCompile}
         onToggleAuto={toggleAutoCompile}
         onExport={() => void handleExport()}
         onShare={handleShare}
@@ -1693,6 +1753,7 @@ function App() {
                     canExport={canExport}
                     hasProject={project !== null}
                     onCompile={handleCompile}
+                    compileTitle={buildTitle}
                     resolveFile={resolveFile}
                     onJump={(file, line) => goTo(file, line)}
                     problemsRequest={problemsRequest}
