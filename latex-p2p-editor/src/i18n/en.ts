@@ -1,0 +1,185 @@
+// English (source of truth for the message keys).
+export const en = {
+  // ─── App / generic ──────────────────────────────────────────────
+  "app.name": "LaTeX P2P",
+  "app.tagline": "Local compile · P2P collaboration",
+  "action.close": "Close",
+  "action.copy": "Copy",
+  "action.copied": "Copied!",
+  "action.cancel": "Cancel",
+  "common.you": "You",
+  "common.peer": "Peer {id}",
+
+  // ─── Toolbar ────────────────────────────────────────────────────
+  "toolbar.open": "Open",
+  "toolbar.open.tip": "Open a LaTeX project folder (⌘O / Ctrl+O)",
+  "toolbar.join": "Join",
+  "toolbar.join.tip": "Join a P2P room with the ID a teammate shared",
+  "toolbar.collaborate": "Collaborate",
+  "toolbar.collaborate.tip": "Share this project and enable real-time P2P editing",
+  "toolbar.room": "Room",
+  "toolbar.room.tip": "Room, peers, connection and invite details",
+  "toolbar.manual": "Manual",
+  "toolbar.manual.tip": "Compile only when you press Compile or ⌘S",
+  "toolbar.auto": "Auto",
+  "toolbar.auto.tip": "Recompile automatically shortly after you stop typing",
+  "toolbar.compile": "Compile",
+  "toolbar.compile.tip": "Compile LaTeX locally (⌘S / Ctrl+S)",
+  "toolbar.compiling": "Compiling…",
+  "toolbar.rootFile.tip": "Root file to compile",
+  "toolbar.rootFile.lockedTip": "The root file is fixed by the room (.texcollab/room.json)",
+  "toolbar.language": "Language",
+  "toolbar.profile.tip": "Your name, cursor color and network settings",
+
+  // ─── Mode / host ────────────────────────────────────────────────
+  "mode.solo": "Solo",
+  "mode.solo.tip": "Solo mode: saves to disk locally, no network traffic",
+  "mode.host": "Host",
+  "mode.host.tip": "You are the Host: the only peer that writes to disk (every 1.5 s).",
+  "mode.guest": "Guest",
+  "mode.guest.tip": "You are a Guest: synced in memory with the swarm, never writing to disk.",
+
+  // ─── Connection ─────────────────────────────────────────────────
+  "conn.disconnected": "Offline",
+  "conn.connecting": "Connecting…",
+  "conn.unreachable": "No signaling",
+  "conn.waiting": "Waiting for peers",
+  "conn.connected": "Connected",
+  "conn.unreachable.help":
+    "No signaling server could be reached. Check your connection or set your own server in Profile (see signaling-server/).",
+  "conn.waiting.help": "Connected to signaling. Nobody else is in the room yet.",
+  "conn.peersLine": "WebRTC peers: {webrtc} · Local windows: {bc}",
+  "conn.synced": "Synced: {value}",
+  "conn.yes": "yes",
+  "conn.no": "no",
+
+  // ─── Save state ─────────────────────────────────────────────────
+  "save.guest": "Guest",
+  "save.guest.tip": "Guests sync in memory; the Host writes to disk.",
+  "save.saving": "Saving…",
+  "save.dirty": "Unsaved",
+  "save.dirty.tip": "Pending changes (autosave in 1.5 s).",
+  "save.error": "Save failed",
+  "save.saved": "Saved {time}",
+  "save.saved.tip": "Last saved: {time}",
+
+  // ─── Compiler ───────────────────────────────────────────────────
+  "compiler.missing": "No compiler",
+  "compiler.hint.macos":
+    "No LaTeX engine found. Install Tectonic with `brew install tectonic` (recommended) or MacTeX from https://tug.org/mactex/, then restart the app.",
+  "compiler.hint.windows":
+    "No LaTeX engine found. Install Tectonic (`winget install TectonicTypesetting.Tectonic`) or MiKTeX from https://miktex.org/download, then restart the app.",
+  "compiler.hint.linux":
+    "No LaTeX engine found. Install Tectonic (`cargo install tectonic` or your distro package) or TeX Live (`sudo apt install texlive-latex-base`), then restart the app.",
+
+  // ─── Join room dialog ───────────────────────────────────────────
+  "join.title": "Join a room",
+  "join.help": "Paste the room ID. You will pick a local folder where the project is saved whenever you are the Host.",
+  "join.placeholder": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "join.submit": "Choose folder and join",
+
+  // ─── Collab panel ───────────────────────────────────────────────
+  "collab.title": "Live collaboration",
+  "collab.roomId": "Room ID",
+  "collab.inviteButton": "Copy invite message",
+  "collab.copyId": "Copy ID",
+  "collab.invite":
+    "Invite teammates: share the folder through your cloud (Drive, iCloud, OneDrive…) or send them this ID to use “Join”.",
+  "collab.peers": "Peers ({count})",
+  "collab.hostWrites": "Host · writes to disk",
+  "collab.guestRam": "Guest · in memory",
+  "collab.connection": "Connection",
+  "collab.disconnect": "Disconnect and work solo",
+  "collab.disconnect.tip": "Close WebRTC and return to solo mode",
+
+  // ─── Profile ────────────────────────────────────────────────────
+  "profile.title": "Collaboration profile",
+  "profile.name": "Your name",
+  "profile.name.placeholder": "Type your name…",
+  "profile.color": "Cursor color",
+  "profile.signaling": "Custom signaling server (optional)",
+  "profile.signaling.help": "Used on the next connection, before the public servers.",
+  "profile.newWindow": "Open another window",
+  "profile.newWindow.tip": "Open a second window to try collaboration on this computer",
+
+  // ─── Empty state / onboarding ───────────────────────────────────
+  "empty.title": "Write LaTeX. Compile locally. Collaborate peer-to-peer.",
+  "empty.subtitle": "No server, no timeouts, no subscription.",
+  "empty.step1.title": "Open a folder",
+  "empty.step1.body": "Any folder works: an existing project or an empty one (a main.tex is created for you).",
+  "empty.step2.title": "Compile with ⌘S",
+  "empty.step2.body": "Your CPU runs tectonic or pdflatex. The PDF and the error list appear on the right.",
+  "empty.step3.title": "Collaborate",
+  "empty.step3.body": "Press “Collaborate”, then share the folder via your cloud or send the room ID for “Join”.",
+  "empty.open": "Open folder",
+  "empty.join": "Join a room",
+  "empty.compilerMissing": "No LaTeX engine was found on this computer.",
+
+  // ─── Preview ────────────────────────────────────────────────────
+  "preview.zoomOut": "Zoom out",
+  "preview.zoomIn": "Zoom in",
+  "preview.fitWidth": "Fit width",
+  "preview.pages": "{count} pages",
+  "preview.page": "1 page",
+  "preview.export": "Export PDF",
+  "preview.export.tip": "Save the compiled PDF somewhere",
+  "preview.compiledWith": "{compiler} · {seconds} s",
+  "preview.compiling": "Compiling locally…",
+  "preview.fatal.title": "Could not compile",
+  "preview.error.title": "Compilation error",
+  "preview.error.body": "LaTeX did not produce a PDF. Check the errors below; click one to jump to the line.",
+  "preview.idle.before": "Press",
+  "preview.idle.after": "or “Compile” to see the PDF",
+  "preview.status.ok": "Compiled",
+  "preview.status.error": "Error",
+  "preview.status.errors": "{count} errors",
+  "preview.status.error1": "1 error",
+  "preview.status.warnings": "{count} warnings",
+  "preview.status.warning1": "1 warning",
+  "preview.status.timeout": "Timed out",
+  "preview.log": "Log",
+  "preview.log.tip": "Show the full compiler output",
+  "preview.jump": "Go to line",
+
+  // ─── Status bar ─────────────────────────────────────────────────
+  "status.noProject": "No project open",
+  "status.root": "Root",
+  "status.room": "Room {id}",
+
+  // ─── Sidebar rail ───────────────────────────────────────────────
+  "rail.open": "Open",
+  "rail.join": "Join",
+  "rail.share": "Share",
+  "rail.room": "Room",
+  "rail.build": "Build",
+  "rail.auto": "Auto",
+  "rail.export": "Export",
+  "rail.you": "You",
+  "rail.lang": "Lang",
+  "rail.auto.on": "Auto build is on: compiles when you stop typing. Click to switch to manual.",
+  "rail.auto.off": "Auto build is off: compile with Build or ⌘S. Click to enable.",
+  "panel.close": "Close panel",
+
+  // ─── Welcome ────────────────────────────────────────────────────
+  "welcome.start": "Start",
+  "welcome.recent": "Recent",
+  "welcome.noRecent": "Projects you open will show up here.",
+  "welcome.remove": "Remove from list",
+  "welcome.how": "How it works",
+  "welcome.how1": "Open any folder. The root .tex file is detected (or a main.tex is created).",
+  "welcome.how2": "Build runs tectonic or pdflatex on your machine. Errors link to the line.",
+  "welcome.how3": "Share starts a P2P room. Teammates join through your cloud folder or the room ID.",
+  "welcome.shortcut.open": "⌘O",
+  "welcome.shortcut.build": "⌘S",
+
+  // ─── Top bar ────────────────────────────────────────────────────
+  "topbar.lastBuild": "Last build",
+  "topbar.autoOn": "auto",
+  "topbar.manual": "manual",
+
+  // ─── Errors ─────────────────────────────────────────────────────
+  "error.openProject": "Could not open the project: {message}",
+  "error.join": "Could not join the room: {message}",
+  "error.collab": "Could not start collaboration: {message}",
+  "error.export": "Could not export the PDF: {message}",
+} as const;

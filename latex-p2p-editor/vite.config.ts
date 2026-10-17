@@ -9,6 +9,22 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(() => ({
   plugins: [react(), tailwindcss()],
 
+  build: {
+    chunkSizeWarningLimit: 700,
+    // Split the big vendor libraries into their own cached chunks.
+    rolldownOptions: {
+      output: {
+        manualChunks(id: string) {
+          if (!id.includes("node_modules")) return undefined;
+          if (id.includes("pdfjs-dist")) return "pdfjs";
+          if (/[\\/](yjs|y-webrtc|y-protocols|y-codemirror\.next|lib0|simple-peer)[\\/]/.test(id)) return "yjs";
+          if (/[\\/](@codemirror|@lezer|codemirror-lang-latex|style-mod|w3c-keyname|crelt)[\\/]/.test(id)) return "codemirror";
+          return undefined;
+        },
+      },
+    },
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors

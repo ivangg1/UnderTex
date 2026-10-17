@@ -1,6 +1,67 @@
 @import "tailwindcss";
 
-/* ─── Remote Cursor & Collaborative Selection Styles (y-codemirror.next) ─── */
+/* ─── Monokai Pro palette as Tailwind theme tokens (bg-mk-bg, text-mk-fg, …) ─── */
+@theme {
+  --color-mk-bg: #2d2a2e; /* editor / main surface */
+  --color-mk-bg2: #221f22; /* rail, top bar, panels */
+  --color-mk-bg3: #403e41; /* borders, hover */
+  --color-mk-bg4: #5b595c; /* muted borders, disabled */
+  --color-mk-fg: #fcfcfa;
+  --color-mk-fg2: #c1c0c0;
+  --color-mk-fg3: #939293;
+  --color-mk-fg4: #727072;
+  --color-mk-red: #ff6188;
+  --color-mk-orange: #fc9867;
+  --color-mk-yellow: #ffd866;
+  --color-mk-green: #a9dc76;
+  --color-mk-blue: #78dce8;
+  --color-mk-purple: #ab9df2;
+
+  --font-sans: "SF Pro Text", Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", "Fira Code", Menlo, Consolas, monospace;
+}
+
+:root {
+  color-scheme: dark;
+  -webkit-font-smoothing: antialiased;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: #221f22;
+  color: #fcfcfa;
+  font-family: var(--font-sans);
+  overflow: hidden;
+}
+
+/* Thin IDE-style scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #5b595c transparent;
+}
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #5b595c;
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+select option {
+  background: #2d2a2e;
+  color: #fcfcfa;
+}
+
+/* ─── Remote cursors & selections (y-codemirror.next) ─── */
 .cm-ySelection {
   opacity: 0.35;
 }
@@ -28,13 +89,13 @@
   top: -1.35em;
   left: -2px;
   font-size: 10px;
-  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-sans);
   font-weight: 600;
   line-height: normal;
   user-select: none;
-  color: #ffffff;
+  color: #221f22;
   padding: 1px 5px;
-  border-radius: 3px;
+  border-radius: 2px;
   white-space: nowrap;
   pointer-events: none;
   z-index: 100;
