@@ -1,7 +1,18 @@
-# Tauri + React + Typescript
+# latex-p2p-editor (app)
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+React + CodeMirror 6 frontend and Tauri v2 backend of the editor. General
+documentation, architecture and the demo live in the [root README](../README.md).
 
-## Recommended IDE Setup
+```bash
+npm install
+npm run tauri dev      # desktop app in development
+npm test               # vitest
+npm run build          # tsc + vite build
+(cd src-tauri && cargo test)
+```
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+Optional environment variables (`.env`):
+
+```env
+VITE_SIGNALING_SERVER=wss://your-signaling-server
+```

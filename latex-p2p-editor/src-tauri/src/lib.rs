@@ -1,337 +1,217 @@
-use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use uuid::Uuid;
+//! Tauri v2 backend for the LaTeX P2P Desktop Editor.
+//!
+//! Modules:
+//! * [`project`]  – project folder, root-file detection, `.texcollab/` metadata, atomic saves.
+//! * [`compiler`] – cross-platform engine discovery and the cached local compile pipeline.
+//! * [`fsutil`]   – atomic writes and path validation.
 
-// ─── Data structures ────────────────────────────────────────────────
+mod compiler;
+mod fsutil;
+mod history;
+mod project;
 
-/// Metadata stored in `.texcollab/room.json`
-#[derive(Serialize, Deserialize, Clone)]
-struct RoomMeta {
-    room_id: String,
-}
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::sync::Mutex;
+use std::time::Duration;
 
-/// Result returned when opening/reading a project
-#[derive(Serialize, Clone)]
-struct ProjectData {
-    /// Absolute path of the project folder
-    project_path: String,
-    /// Contents of `main.tex` (empty string if the file doesn't exist yet)
-    tex_content: String,
-    /// Whether this project is configured for collaborative editing (.texcollab/ exists)
-    is_collab: bool,
-    /// The deterministic WebRTC room ID for this project folder (if in collab mode)
-    room_id: Option<String>,
-    /// Raw bytes of `.texcollab/crdt_state.bin`, if any
-    crdt_state: Option<Vec<u8>>,
-}
+use tauri::{Emitter, Manager, WindowEvent};
 
-/// Result returned after compiling LaTeX
-#[derive(Serialize, Clone, Debug)]
-pub struct CompileResult {
-    /// Raw bytes of the generated PDF
-    pub pdf_bytes: Vec<u8>,
-    /// Combined standard output and error from the compiler
-    pub logs: String,
-}
+use compiler::{BuildOptions, CompileOutput, CompilerInfo};
+use history::{HistoryStore, SaveOutcome, SnapshotMeta};
+use project::{ProjectData, ProjectFile, RoomMeta};
 
-// ─── Helpers ────────────────────────────────────────────────────────
+/// Event sent to a window when the user asks to close it. The frontend flushes
+/// pending saves and then calls `close_window`.
+pub const CLOSE_REQUESTED_EVENT: &str = "app://close-requested";
 
-/// Ensure `.texcollab/` directory and `room.json` exist.
-/// Returns the room_id (creating a new UUID if `room.json` is absent).
-fn ensure_room_meta(project_path: &Path) -> Result<String, String> {
-    let collab_dir = project_path.join(".texcollab");
-    fs::create_dir_all(&collab_dir).map_err(|e| format!("Failed to create .texcollab dir: {e}"))?;
-
-    let room_file = collab_dir.join("room.json");
-    if room_file.exists() {
-        let data = fs::read_to_string(&room_file)
-            .map_err(|e| format!("Failed to read room.json: {e}"))?;
-        let meta: RoomMeta =
-            serde_json::from_str(&data).map_err(|e| format!("Invalid room.json: {e}"))?;
-        Ok(meta.room_id)
-    } else {
-        let meta = RoomMeta {
-            room_id: Uuid::new_v4().to_string(),
-        };
-        let json =
-            serde_json::to_string_pretty(&meta).map_err(|e| format!("JSON serialize: {e}"))?;
-        fs::write(&room_file, json).map_err(|e| format!("Failed to write room.json: {e}"))?;
-        Ok(meta.room_id)
-    }
-}
-
-/// Recursively copy all project assets into destination directory,
-/// omitting hidden dirs, git, .texcollab, intermediate files, and main.tex.
-fn copy_project_assets(src: &Path, dst: &Path) -> std::io::Result<()> {
-    if !src.exists() || !src.is_dir() {
-        return Ok(());
-    }
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let file_name = entry.file_name();
-        let file_name_str = file_name.to_string_lossy();
-
-        // Skip hidden files/folders and build caches
-        if file_name_str.starts_with('.')
-            || file_name_str == "target"
-            || file_name_str.ends_with(".tmp")
-            || file_name_str.ends_with(".log")
-            || file_name_str.ends_with(".aux")
-        {
-            continue;
-        }
-
-        // Do not copy existing main.tex since current in-memory content is used
-        if file_name_str == "main.tex" {
-            continue;
-        }
-
-        let src_path = entry.path();
-        let dst_path = dst.join(&file_name);
-        if src_path.is_dir() {
-            fs::create_dir_all(&dst_path)?;
-            copy_project_assets(&src_path, &dst_path)?;
-        } else if src_path.is_file() {
-            let _ = fs::copy(&src_path, &dst_path);
-        }
-    }
-    Ok(())
-}
-
-/// Build an augmented PATH environment variable so Tauri desktop can find
-/// CLI tools installed via Homebrew, Cargo, MacTeX, etc.
-fn get_augmented_path() -> String {
-    let current_path = std::env::var("PATH").unwrap_or_default();
-    let home = std::env::var("HOME").unwrap_or_default();
-    format!(
-        "/opt/homebrew/bin:/usr/local/bin:/Library/TeX/texbin:{}/.cargo/bin:{}",
-        home, current_path
-    )
-}
-
-/// Run either tectonic or fallback to pdflatex in the specified directory.
-fn run_compiler(temp_dir: &Path) -> Result<(std::process::Output, &'static str), String> {
-    let augmented_path = get_augmented_path();
-
-    // 1. Attempt tectonic
-    match Command::new("tectonic")
-        .args(["-X", "compile", "main.tex"])
-        .current_dir(temp_dir)
-        .env("PATH", &augmented_path)
-        .output()
-    {
-        Ok(output) => return Ok((output, "tectonic")),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            // Tectonic not in PATH, try fallback
-        }
-        Err(err) => return Err(format!("Failed to execute tectonic: {err}")),
-    }
-
-    // 2. Fallback to pdflatex
-    match Command::new("pdflatex")
-        .args(["-interaction=nonstopmode", "main.tex"])
-        .current_dir(temp_dir)
-        .env("PATH", &augmented_path)
-        .output()
-    {
-        Ok(output) => Ok((output, "pdflatex")),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Err(
-            "Neither 'tectonic' nor 'pdflatex' was found in PATH. Please install Tectonic (e.g. 'brew install tectonic') or MacTeX/TeX Live.".to_string()
-        ),
-        Err(err) => Err(format!("Failed to execute pdflatex: {err}")),
-    }
-}
+/// Labels of windows that already flushed and may now close for real.
+#[derive(Default)]
+struct ClosingWindows(Mutex<HashSet<String>>);
 
 // ─── Tauri commands ─────────────────────────────────────────────────
 
-/// Open a project folder: reads `main.tex`, detects if `.texcollab/room.json` exists
-/// (Solo vs Collab mode), and optionally loads the persisted CRDT state.
-/// Does NOT create `.texcollab/` automatically.
+/// Open a project folder: detects the root `.tex` file, lists the project's `.tex`
+/// files, reads the root file and `.texcollab/` metadata if present. Never creates
+/// `.texcollab/` by itself.
 #[tauri::command]
-fn read_project(project_path: String) -> Result<ProjectData, String> {
-    let path = PathBuf::from(&project_path);
-    if !path.is_dir() {
-        return Err(format!("Not a directory: {project_path}"));
-    }
+fn read_project(project_path: String, main_file: Option<String>) -> Result<ProjectData, String> {
+    project::read_project(&project_path, main_file.as_deref())
+}
 
-    // Read main.tex (create a starter file if it doesn't exist)
-    let tex_path = path.join("main.tex");
-    let tex_content = if tex_path.exists() {
-        fs::read_to_string(&tex_path)
-            .map_err(|e| format!("Failed to read main.tex: {e}"))?
-    } else {
-        let starter = "\\documentclass{article}\n\\begin{document}\nHello, world!\n\\end{document}\n";
-        fs::write(&tex_path, starter)
-            .map_err(|e| format!("Failed to create main.tex: {e}"))?;
-        starter.to_string()
-    };
+/// Scaffolds a new project folder from template files and returns its path.
+#[tauri::command]
+fn create_project(parent_dir: String, name: String, files: Vec<ProjectFile>) -> Result<String, String> {
+    project::create_project(&parent_dir, &name, &files)
+}
 
-    // Check if .texcollab/room.json exists without creating .texcollab/
-    let collab_dir = path.join(".texcollab");
-    let room_file = collab_dir.join("room.json");
-    let (is_collab, room_id) = if room_file.exists() {
-        let data = fs::read_to_string(&room_file)
-            .map_err(|e| format!("Failed to read room.json: {e}"))?;
-        let meta: RoomMeta =
-            serde_json::from_str(&data).map_err(|e| format!("Invalid room.json: {e}"))?;
-        (true, Some(meta.room_id))
-    } else {
-        (false, None)
-    };
+// ─── Version history (stored in the app data dir, never in the project) ──
 
-    // Try to load CRDT state if collaborative mode is active
-    let crdt_state = if is_collab {
-        let crdt_state_path = collab_dir.join("crdt_state.bin");
-        if crdt_state_path.exists() {
-            Some(
-                fs::read(&crdt_state_path)
-                    .map_err(|e| format!("Failed to read crdt_state.bin: {e}"))?,
-            )
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+fn history_store(app: &tauri::AppHandle) -> Result<HistoryStore, String> {
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("App data directory unavailable: {e}"))?
+        .join("history");
+    Ok(HistoryStore::new(root))
+}
 
-    Ok(ProjectData {
-        project_path,
-        tex_content,
-        is_collab,
-        room_id,
-        crdt_state,
+#[tauri::command]
+async fn history_list(app: tauri::AppHandle, project_path: String) -> Result<Vec<SnapshotMeta>, String> {
+    let store = history_store(&app)?;
+    tauri::async_runtime::spawn_blocking(move || store.list(&project_path))
+        .await
+        .map_err(|e| format!("History task panicked: {e}"))
+}
+
+#[tauri::command]
+async fn history_save(
+    app: tauri::AppHandle,
+    project_path: String,
+    main_file: String,
+    content: String,
+    label: Option<String>,
+    author: Option<String>,
+) -> Result<SaveOutcome, String> {
+    let store = history_store(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        store.save(&project_path, &main_file, &content, label.as_deref(), author.as_deref())
     })
+    .await
+    .map_err(|e| format!("History task panicked: {e}"))?
 }
 
-/// Initialize collaboration on demand for a project folder:
-/// Creates `.texcollab/room.json` with a UUID and returns the room_id.
 #[tauri::command]
-fn init_collab_project(project_path: String) -> Result<String, String> {
+async fn history_read(app: tauri::AppHandle, project_path: String, id: String) -> Result<String, String> {
+    let store = history_store(&app)?;
+    tauri::async_runtime::spawn_blocking(move || store.read(&project_path, &id))
+        .await
+        .map_err(|e| format!("History task panicked: {e}"))?
+}
+
+#[tauri::command]
+async fn history_delete(app: tauri::AppHandle, project_path: String, id: String) -> Result<Vec<SnapshotMeta>, String> {
+    let store = history_store(&app)?;
+    tauri::async_runtime::spawn_blocking(move || store.delete(&project_path, &id))
+        .await
+        .map_err(|e| format!("History task panicked: {e}"))?
+}
+
+/// Initialize collaboration on demand. `room_id` joins an existing room (shared by a
+/// peer); `None` hosts a new one. Returns the room metadata.
+#[tauri::command]
+fn init_collab_project(
+    project_path: String,
+    main_file: String,
+    room_id: Option<String>,
+) -> Result<RoomMeta, String> {
     let path = PathBuf::from(&project_path);
     if !path.is_dir() {
         return Err(format!("Not a directory: {project_path}"));
     }
-    let room_id = ensure_room_meta(&path)?;
-    Ok(room_id)
+    project::ensure_room_meta(&path, room_id.as_deref(), &main_file)
 }
 
-/// Atomically save `main.tex` content (write to tmp then rename).
+/// Atomically save the root TeX file (write temp + fsync + rename).
 #[tauri::command]
-fn save_tex_atomic(project_path: String, content: String) -> Result<(), String> {
-    let dir = PathBuf::from(&project_path);
-    let tex_path = dir.join("main.tex");
-    let tmp_path = dir.join("main.tex.tmp");
-
-    fs::write(&tmp_path, &content).map_err(|e| format!("Failed to write tmp: {e}"))?;
-    fs::rename(&tmp_path, &tex_path).map_err(|e| format!("Atomic rename failed: {e}"))?;
-    Ok(())
+fn save_tex_atomic(project_path: String, main_file: String, content: String) -> Result<bool, String> {
+    project::save_tex(&project_path, &main_file, &content)
 }
 
-/// Persist the binary CRDT state vector to `.texcollab/crdt_state.bin`.
+/// Persist the binary CRDT state to `.texcollab/crdt_state.bin`.
 #[tauri::command]
-fn save_crdt_state(project_path: String, crdt_binary: Vec<u8>) -> Result<(), String> {
-    let dir = PathBuf::from(&project_path);
-    let collab_dir = dir.join(".texcollab");
-    fs::create_dir_all(&collab_dir)
-        .map_err(|e| format!("Failed to create .texcollab dir: {e}"))?;
-
-    let state_path = collab_dir.join("crdt_state.bin");
-    let tmp_path = collab_dir.join("crdt_state.bin.tmp");
-
-    fs::write(&tmp_path, &crdt_binary).map_err(|e| format!("Failed to write crdt tmp: {e}"))?;
-    fs::rename(&tmp_path, &state_path).map_err(|e| format!("Atomic rename crdt failed: {e}"))?;
-    Ok(())
+fn save_crdt_state(project_path: String, crdt_binary: Vec<u8>) -> Result<bool, String> {
+    project::save_crdt(&project_path, &crdt_binary)
 }
 
-/// Atomically persist both `main.tex` and `.texcollab/crdt_state.bin` (SPEC 4.B.3).
+/// Persist both the root TeX file and the CRDT state (collab mode, host only).
 #[tauri::command]
 fn save_project_state(
     project_path: String,
+    main_file: String,
     tex_content: String,
     crdt_binary: Vec<u8>,
-) -> Result<(), String> {
-    save_tex_atomic(project_path.clone(), tex_content)?;
-    save_crdt_state(project_path, crdt_binary)?;
-    Ok(())
+) -> Result<bool, String> {
+    let wrote_tex = project::save_tex(&project_path, &main_file, &tex_content)?;
+    let wrote_crdt = project::save_crdt(&project_path, &crdt_binary)?;
+    Ok(wrote_tex || wrote_crdt)
 }
 
-/// Compile LaTeX in a temporary OS directory so cloud folders are never polluted
-/// with .aux, .log, or conflicting .pdf files.
+/// Reports which LaTeX engine is available (and how to install one if none is).
 #[tauri::command]
-fn compile_latex(project_path: String, tex_content: String) -> Result<CompileResult, String> {
-    let proj_dir = PathBuf::from(&project_path);
-    let temp_dir = std::env::temp_dir().join(format!("latex_build_{}", Uuid::new_v4()));
-    fs::create_dir_all(&temp_dir)
-        .map_err(|e| format!("Failed to create temporary build directory: {e}"))?;
-
-    // Copy project assets (images, stylesheets, subfiles)
-    if let Err(e) = copy_project_assets(&proj_dir, &temp_dir) {
-        let _ = fs::remove_dir_all(&temp_dir);
-        return Err(format!("Failed to copy project assets: {e}"));
-    }
-
-    // Write the in-memory tex content
-    let temp_tex = temp_dir.join("main.tex");
-    if let Err(e) = fs::write(&temp_tex, &tex_content) {
-        let _ = fs::remove_dir_all(&temp_dir);
-        return Err(format!("Failed to write in-memory TeX to temp directory: {e}"));
-    }
-
-    // Run tectonic or fallback to pdflatex
-    let compile_attempt = run_compiler(&temp_dir);
-
-    match compile_attempt {
-        Ok((output, compiler_name)) => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let logs = format!(
-                "Compiler: {}\nStatus: {}\n--- OUTPUT ---\n{}{}",
-                compiler_name,
-                output.status,
-                stdout.trim(),
-                if !stderr.trim().is_empty() {
-                    format!("\n--- ERRORS ---\n{}", stderr.trim())
-                } else {
-                    String::new()
-                }
-            );
-
-            let pdf_path = temp_dir.join("main.pdf");
-            if pdf_path.exists() {
-                match fs::read(&pdf_path) {
-                    Ok(pdf_bytes) => {
-                        let _ = fs::remove_dir_all(&temp_dir);
-                        Ok(CompileResult { pdf_bytes, logs })
-                    }
-                    Err(e) => {
-                        let _ = fs::remove_dir_all(&temp_dir);
-                        Err(format!("PDF generated but failed to read: {e}\n\nLogs:\n{logs}"))
-                    }
-                }
-            } else {
-                let _ = fs::remove_dir_all(&temp_dir);
-                Err(format!("Compilation did not produce main.pdf.\n\nLogs:\n{logs}"))
-            }
-        }
-        Err(err) => {
-            let _ = fs::remove_dir_all(&temp_dir);
-            Err(err)
-        }
-    }
+async fn detect_compiler() -> CompilerInfo {
+    tauri::async_runtime::spawn_blocking(compiler::detect_compiler)
+        .await
+        .unwrap_or_else(|_| compiler::CompilerInfo {
+            os: compiler::current_os(),
+            name: None,
+            path: None,
+            version: None,
+            install_hint: compiler::install_hint(),
+        })
 }
 
-/// Open a new desktop window for testing collaboration or multi-project editing.
+/// Compile the in-memory TeX source inside the per-project build cache. Runs on a
+/// blocking thread so the UI stays responsive during long builds. `options`
+/// selects the active-chapter / draft / precompiled-preamble shortcuts (all off by
+/// default, which is also what Export uses).
+#[tauri::command]
+async fn compile_latex(
+    project_path: String,
+    main_file: String,
+    tex_content: String,
+    timeout_secs: Option<u64>,
+    options: Option<BuildOptions>,
+) -> Result<CompileOutput, String> {
+    let timeout = timeout_secs.map(Duration::from_secs).unwrap_or(compiler::DEFAULT_TIMEOUT);
+    let options = options.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || {
+        compiler::compile(&project_path, &main_file, &tex_content, &options, timeout)
+    })
+    .await
+    .map_err(|e| format!("Compile task panicked: {e}"))?
+}
+
+/// Returns the raw bytes of a file inside the build cache (e.g. the compiled PDF)
+/// as a binary IPC response, avoiding JSON-encoding megabytes of numbers.
+#[tauri::command]
+async fn read_build_file(path: String) -> Result<tauri::ipc::Response, String> {
+    let bytes = tauri::async_runtime::spawn_blocking(move || compiler::read_build_file(&path))
+        .await
+        .map_err(|e| format!("Read task panicked: {e}"))??;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+/// Copies a compiled PDF from the build cache to a user-chosen destination.
+#[tauri::command]
+fn export_pdf(source: String, destination: String) -> Result<(), String> {
+    let bytes = compiler::read_build_file(&source)?;
+    fsutil::write_atomic(std::path::Path::new(&destination), &bytes)
+        .map(|_| ())
+        .map_err(|e| format!("Failed to export PDF: {e}"))
+}
+
+/// Open a new desktop window (useful to test collaboration side by side).
 #[tauri::command]
 async fn open_new_window(app: tauri::AppHandle) -> Result<(), String> {
-    let window_id = format!("win_{}", Uuid::new_v4());
+    let window_id = format!("win_{}", uuid::Uuid::new_v4());
     tauri::WebviewWindowBuilder::new(&app, &window_id, tauri::WebviewUrl::default())
         .title("LaTeX P2P Editor")
         .inner_size(1280.0, 800.0)
         .build()
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Called by the frontend once pending saves are flushed; closes the window for real.
+#[tauri::command]
+fn close_window(window: tauri::WebviewWindow, closing: tauri::State<'_, ClosingWindows>) -> Result<(), String> {
+    closing
+        .0
+        .lock()
+        .map_err(|_| "close state poisoned".to_string())?
+        .insert(window.label().to_string());
+    window.destroy().map_err(|e| e.to_string())
 }
 
 // ─── App bootstrap ──────────────────────────────────────────────────
@@ -341,223 +221,40 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .manage(ClosingWindows::default())
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                let state = window.state::<ClosingWindows>();
+                let already_flushed = state
+                    .0
+                    .lock()
+                    .map(|set| set.contains(window.label()))
+                    .unwrap_or(true);
+                if !already_flushed {
+                    // Give the frontend a chance to flush the debounced save first.
+                    api.prevent_close();
+                    let _ = window.emit_to(window.label(), CLOSE_REQUESTED_EVENT, ());
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             read_project,
+            create_project,
+            history_list,
+            history_save,
+            history_read,
+            history_delete,
             init_collab_project,
             save_tex_atomic,
             save_crdt_state,
             save_project_state,
+            detect_compiler,
             compile_latex,
+            read_build_file,
+            export_pdf,
             open_new_window,
+            close_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
-
-// ─── Tests ──────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn create_temp_test_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("test_latex_{}_{}", name, Uuid::new_v4()));
-        fs::create_dir_all(&dir).expect("Failed to create test temp dir");
-        dir
-    }
-
-    #[test]
-    fn test_ensure_room_meta_generates_and_persists_uuid() {
-        let dir = create_temp_test_dir("room_meta");
-        let room_id_1 = ensure_room_meta(&dir).expect("First room_id generation failed");
-
-        // Verify room_id is a valid UUID
-        assert!(Uuid::parse_str(&room_id_1).is_ok());
-
-        // Verify room.json file exists
-        let room_file = dir.join(".texcollab").join("room.json");
-        assert!(room_file.exists());
-
-        // Verify subsequent calls return the exact same deterministic UUID
-        let room_id_2 = ensure_room_meta(&dir).expect("Second room_id read failed");
-        assert_eq!(room_id_1, room_id_2);
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn test_read_project_creates_starter_tex_in_solo_mode() {
-        let dir = create_temp_test_dir("read_proj_solo");
-        let dir_str = dir.to_str().unwrap().to_string();
-
-        let proj = read_project(dir_str.clone()).expect("Failed to read project");
-
-        // Must create main.tex with standard starter document
-        assert!(proj.tex_content.contains("\\documentclass{article}"));
-        assert!(proj.tex_content.contains("\\begin{document}"));
-        assert!(dir.join("main.tex").exists());
-
-        // Solo Mode: .texcollab must NOT exist, is_collab is false, room_id is None
-        assert!(!dir.join(".texcollab").exists());
-        assert!(!proj.is_collab);
-        assert!(proj.room_id.is_none());
-        assert!(proj.crdt_state.is_none());
-
-        // Now initiate collaboration on demand
-        let room_id = init_collab_project(dir_str.clone()).expect("Failed to init collab");
-        assert!(Uuid::parse_str(&room_id).is_ok());
-        assert!(dir.join(".texcollab").join("room.json").exists());
-
-        // Subsequent read_project detects collab mode
-        let proj_collab = read_project(dir_str).expect("Failed to re-read project");
-        assert!(proj_collab.is_collab);
-        assert_eq!(proj_collab.room_id, Some(room_id));
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn test_atomic_save_tex_and_crdt_persistence() {
-        let dir = create_temp_test_dir("atomic_save");
-        let dir_str = dir.to_str().unwrap().to_string();
-
-        // 1. Initial read in Solo mode
-        let initial = read_project(dir_str.clone()).expect("Initial read failed");
-        assert!(!initial.is_collab);
-
-        // 2. Save modified TeX atomically in Solo mode (does NOT create .texcollab)
-        let new_content = "\\documentclass{article}\n\\begin{document}\nModified Content\n\\end{document}";
-        save_tex_atomic(dir_str.clone(), new_content.to_string())
-            .expect("Atomic TeX save failed");
-
-        assert_eq!(
-            fs::read_to_string(dir.join("main.tex")).unwrap(),
-            new_content
-        );
-        // Ensure no temporary file left behind and .texcollab was NOT created by save_tex_atomic
-        assert!(!dir.join("main.tex.tmp").exists());
-        assert!(!dir.join(".texcollab").exists());
-
-        // 3. Switch to Collab mode via init_collab_project and save binary CRDT state
-        let room_id = init_collab_project(dir_str.clone()).expect("Init collab failed");
-        let dummy_crdt = vec![0x00, 0x01, 0x02, 0xFF, 0xFE];
-        save_crdt_state(dir_str.clone(), dummy_crdt.clone())
-            .expect("CRDT state save failed");
-
-        // Ensure no temporary CRDT file left behind
-        assert!(!dir.join(".texcollab").join("crdt_state.bin.tmp").exists());
-
-        // 4. Re-read project and verify CRDT state is restored in collab mode
-        let reloaded = read_project(dir_str).expect("Reload project failed");
-        assert!(reloaded.is_collab);
-        assert_eq!(reloaded.room_id, Some(room_id));
-        assert_eq!(reloaded.tex_content, new_content);
-        assert_eq!(reloaded.crdt_state, Some(dummy_crdt));
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn test_save_project_state_persists_both_atomically() {
-        let dir = create_temp_test_dir("save_project_state");
-        let dir_str = dir.to_str().unwrap().to_string();
-
-        let _ = init_collab_project(dir_str.clone()).expect("Init collab failed");
-        let initial = read_project(dir_str.clone()).expect("Read failed");
-        assert!(initial.is_collab);
-        assert_eq!(initial.crdt_state, None);
-
-        let updated_tex = "\\documentclass{article}\n\\begin{document}\nState Save\n\\end{document}";
-        let crdt_data = vec![0xCA, 0xFE, 0xBA, 0xBE];
-
-        save_project_state(dir_str.clone(), updated_tex.to_string(), crdt_data.clone())
-            .expect("save_project_state failed");
-
-        assert_eq!(
-            fs::read_to_string(dir.join("main.tex")).unwrap(),
-            updated_tex
-        );
-        assert_eq!(
-            fs::read(dir.join(".texcollab").join("crdt_state.bin")).unwrap(),
-            crdt_data
-        );
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn test_copy_project_assets_filters_auxiliary_and_hidden_files() {
-        let src = create_temp_test_dir("assets_src");
-        let dst = create_temp_test_dir("assets_dst");
-
-        // Create assets and intermediate files
-        fs::write(src.join("figure.png"), b"dummy_png").unwrap();
-        fs::write(src.join("macros.sty"), b"dummy_sty").unwrap();
-        fs::write(src.join("main.tex"), b"original_tex").unwrap();
-        fs::write(src.join("main.aux"), b"aux_data").unwrap();
-        fs::write(src.join("main.log"), b"log_data").unwrap();
-        fs::write(src.join("test.tmp"), b"tmp_data").unwrap();
-
-        let hidden_dir = src.join(".texcollab");
-        fs::create_dir_all(&hidden_dir).unwrap();
-        fs::write(hidden_dir.join("room.json"), b"{}").unwrap();
-
-        // Run asset copy
-        copy_project_assets(&src, &dst).expect("copy_project_assets failed");
-
-        // Assets should be copied
-        assert!(dst.join("figure.png").exists());
-        assert!(dst.join("macros.sty").exists());
-
-        // main.tex, aux, log, tmp, and hidden files must NOT be copied
-        assert!(!dst.join("main.tex").exists());
-        assert!(!dst.join("main.aux").exists());
-        assert!(!dst.join("main.log").exists());
-        assert!(!dst.join("test.tmp").exists());
-        assert!(!dst.join(".texcollab").exists());
-
-        let _ = fs::remove_dir_all(&src);
-        let _ = fs::remove_dir_all(&dst);
-    }
-
-    #[test]
-    fn test_compile_latex_generates_pdf_without_polluting_project_folder() {
-        let dir = create_temp_test_dir("compile_test");
-        let dir_str = dir.to_str().unwrap().to_string();
-
-        let valid_tex = "\\documentclass{article}\n\\begin{document}\nAutomated Compilation Test\n\\end{document}";
-
-        let result = compile_latex(dir_str, valid_tex.to_string());
-        assert!(result.is_ok(), "Compilation should succeed: {:?}", result.err());
-
-        let output = result.unwrap();
-        // Check valid PDF header (%PDF-)
-        assert!(output.pdf_bytes.starts_with(b"%PDF-"));
-        assert!(!output.logs.is_empty());
-
-        // Verify project directory was NOT polluted with build files
-        assert!(!dir.join("main.aux").exists());
-        assert!(!dir.join("main.log").exists());
-        assert!(!dir.join("main.pdf").exists());
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn test_compile_latex_reports_syntax_error() {
-        let dir = create_temp_test_dir("compile_error");
-        let dir_str = dir.to_str().unwrap().to_string();
-
-        // Deliberately broken LaTeX syntax
-        let broken_tex = "\\documentclass{article}\n\\begin{document}\n\\undefinedMacroDoesNotExistNowhere\n\\end{document}";
-
-        let result = compile_latex(dir_str, broken_tex.to_string());
-        assert!(result.is_err(), "Compilation with undefined macro must fail");
-
-        let err_msg = result.unwrap_err();
-        assert!(err_msg.contains("Compilation did not produce main.pdf") || err_msg.contains("error"));
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-}
-

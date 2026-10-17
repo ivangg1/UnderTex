@@ -1,0 +1,26 @@
+\documentclass{article}
+\usepackage{graphicx}
+\title{LaTeX P2P demo}
+\author{You}
+\begin{document}
+\maketitle
+
+\section{Introduction}
+This project is compiled locally with Tectonic (or pdflatex) inside a per-project
+build cache: the folder you opened never gets \texttt{.aux}, \texttt{.log} or
+\texttt{.pdf} files.
+
+\input{chapters/intro}
+
+\section{Figures and assets}
+Assets are synced incrementally into the cache, so large image folders are copied once.
+
+\begin{center}
+  \includegraphics[width=0.4\textwidth]{figures/box.pdf}
+\end{center}
+
+\section{Try collaboration}
+Press \textbf{Collaborate}, then open this same folder from another window
+(Profile $\rightarrow$ Open another window) or send the room ID to a teammate
+who presses \textbf{Join}.
+\end{document}

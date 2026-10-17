@@ -1,29 +1,37 @@
-# y-webrtc Signaling Server
+# y-webrtc signaling server
 
-Servidor de señalización WebRTC minimalista y ligero para el editor colaborativo P2P de LaTeX.
+Minimal, stateless WebRTC signaling server for the LaTeX P2P editor. It only
+relays connection offers between peers; document content never passes through it.
 
-## Ejecución Local
+## Run locally
 
 ```bash
 npm install
 npm start
 ```
-El servidor escuchará por defecto en `http://localhost:4444` y `ws://localhost:4444`.
 
-## Despliegue Gratuito en la Nube
+The server listens on `http://localhost:4444` / `ws://localhost:4444` by default
+(`PORT` overrides it).
+
+## Free cloud deployment
 
 ### Render (Web Service)
-1. Conecta tu repositorio de GitHub en [render.com](https://render.com).
-2. Elige **Web Service** con **Docker** (Root Directory: `signaling-server`).
-3. Render asignará una URL segura (`https://tu-signaling.onrender.com`).
-4. Para la app de escritorio, usa: `wss://tu-signaling.onrender.com`.
+1. Connect your GitHub repository at [render.com](https://render.com).
+2. Choose **Web Service** with **Docker** (Root Directory: `signaling-server`).
+3. Render assigns a secure URL (`https://your-signaling.onrender.com`).
+4. In the desktop app use `wss://your-signaling.onrender.com`.
 
 ### Railway / Fly.io
-- **Railway:** Nuevo proyecto -> Deploy from GitHub repo -> Configura Root Directory como `/signaling-server`.
-- **Fly.io:** En esta carpeta ejecuta `fly launch` y sigue las instrucciones interactivas.
+- **Railway:** New project → Deploy from GitHub repo → set Root Directory to `/signaling-server`.
+- **Fly.io:** run `fly launch` in this folder and follow the prompts.
 
-### Configurar en la App
-Crea un archivo `.env` en `latex-p2p-editor/` (o configura la variable de entorno al compilar):
+## Configure the app
+
+Create a `.env` file in `latex-p2p-editor/` (or set the variable when building):
+
 ```env
-VITE_SIGNALING_SERVER=wss://tu-signaling.onrender.com
+VITE_SIGNALING_SERVER=wss://your-signaling.onrender.com
 ```
+
+Users can also set a server at runtime in *Profile → Custom signaling server*;
+it is tried before the public y-webrtc servers, which remain as a fallback.

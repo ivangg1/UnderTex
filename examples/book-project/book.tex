@@ -1,0 +1,16 @@
+\documentclass[a4paper,11pt]{report}
+\usepackage[T1]{fontenc}
+\usepackage{lipsum}
+\title{A long document, one chapter at a time}
+\author{LaTeX P2P}
+% Each chapter is \include'd: with the build scope set to "Active chapter" the
+% editor adds \includeonly{<chapter>} to the build copy and typesets only the
+% chapter at the cursor. The other chapters keep their numbering and page
+% numbers from the last full build (their .aux files stay in the build cache).
+\begin{document}
+\maketitle
+\tableofcontents
+\include{chapters/introduction}
+\include{chapters/method}
+\include{chapters/results}
+\end{document}
