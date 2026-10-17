@@ -1,0 +1,30 @@
+# Render Blueprint: one-click deploy of the y-webrtc signaling server.
+#
+#   1. Fork/push this repo to GitHub.
+#   2. Render Dashboard → New → Blueprint → pick the repo (this file is read from
+#      the repository root). Render builds signaling-server/Dockerfile.
+#   3. Copy the service URL, replace https:// with wss:// and put it in the app
+#      (Profile → Custom signaling server) or in VITE_SIGNALING_SERVER.
+#
+# The free plan sleeps after ~15 min without traffic; the first connection then
+# takes ~30-60 s while the instance wakes up. y-webrtc keeps retrying, so the
+# room still connects. Upgrade the plan to avoid the cold start.
+services:
+  - type: web
+    name: latex-p2p-signaling
+    runtime: docker
+    plan: free
+    region: frankfurt # closest region to your users (oregon, ohio, virginia, frankfurt, singapore)
+    rootDir: signaling-server
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /
+    autoDeployTrigger: commit
+    buildFilter:
+      paths:
+        - signaling-server/**
+    envVars:
+      - key: PORT
+        value: "10000"
+      - key: NODE_ENV
+        value: production

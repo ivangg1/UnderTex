@@ -8,7 +8,7 @@ compile limits.
 ```
 ┌──────────────────────────┐      WebRTC (yjs + y-webrtc)      ┌──────────────────────────┐
 │  Peer A  (Host 👑)        │ ◄──────────────────────────────► │  Peer B  (Guest)          │
-│  CodeMirror 6 ⇄ Y.Doc    │   public / self-hosted signaling  │  CodeMirror 6 ⇄ Y.Doc    │
+│  CodeMirror 6 ⇄ Y.Doc    │  self-hosted signaling (encrypted) │  CodeMirror 6 ⇄ Y.Doc    │
 │  tectonic (local)        │                                   │  tectonic (local)        │
 │  writes main.tex + CRDT  │                                   │  memory only             │
 └───────────┬──────────────┘                                   └──────────────────────────┘
@@ -31,6 +31,10 @@ compile limits.
   writes to disk (this is what avoids Drive/iCloud *conflicted copies*). If the
   host drops, the next peer takes over within milliseconds and consolidates the
   state.
+- **Internet collaboration without third parties**: your own signaling server
+  deployable in one click (`render.yaml`, Fly), end-to-end encrypted signaling
+  with a key derived from the room ID, public STUN and an optional TURN relay
+  for strict NATs. The public y-webrtc servers remain only as a fallback.
 - **Project management**: create projects from templates (blank, article,
   report/thesis, beamer), recent projects, flexible root file (`main.tex` →
   first `.tex` with `\documentclass` → first `.tex`; the room remembers it).
@@ -102,14 +106,14 @@ latex-p2p-editor/
 │   │   ├── NewProjectPanel.tsx # name, template, location
 │   │   ├── HistoryPanel.tsx    # named versions + automatic snapshots
 │   │   ├── DiffView.tsx        # version vs current document, restore
-│   │   ├── ProfilePanel.tsx    # name, cursor color, language, signaling server
+│   │   ├── ProfilePanel.tsx    # name, cursor color, language, signaling server, TURN relay
 │   │   ├── Welcome.tsx         # start, recent projects, how it works
 │   │   ├── SplitPane.tsx       # draggable editor | PDF divider
 │   │   ├── LatexEditor.tsx     # CodeMirror 6 + y-codemirror.next (collaborative undo), Monokai theme
 │   │   └── PdfPreview.tsx      # pdf.js viewer + clickable error list
 │   ├── i18n/                   # en/es dictionaries and the useI18n hook
 │   ├── services/
-│   │   ├── collabManager.ts    # Y.Doc, WebrtcProvider, awareness, host election, persistence
+│   │   ├── collabManager.ts    # Y.Doc, WebrtcProvider (encrypted signaling, STUN/TURN), host election, persistence
 │   │   ├── crdtSeed.ts         # deterministic document seeding (prevents duplicated text)
 │   │   ├── latexLog.ts         # tectonic / pdflatex log parser
 │   │   ├── textDiff.ts         # minimal-edit replacement (restore) and line diffs
@@ -124,7 +128,8 @@ latex-p2p-editor/
 │   ├── compiler.rs             # engine discovery, build cache, timeout
 │   └── fsutil.rs               # write_atomic, path validation
 ├── examples/demo-project/      # sample project
-└── signaling-server/           # optional self-hosted y-webrtc signaling server
+├── signaling-server/           # self-hosted y-webrtc signaling server (Dockerfile, fly.toml)
+└── render.yaml                 # Render Blueprint: one-click deploy of signaling-server
 ```
 
 ### Key decisions
@@ -156,6 +161,15 @@ latex-p2p-editor/
   extra churn. Automatic snapshots are deduplicated and pruned; named versions
   are kept forever. Restoring applies a line diff in one transaction, so remote
   cursors and the CRDT history stay sane.
+- **Network: self-hosted, encrypted signaling and configurable STUN/TURN.** The
+  signaling server only introduces peers; the app hands y-webrtc a `password`
+  (SHA-256 of `latexp2p:<room ID>`; the ID is already the shared secret) with
+  which every signaling message is AES-GCM encrypted, so neither our server nor
+  the public ones see SDP offers or ICE candidates. Server order: the one set
+  in *Profile* → `VITE_SIGNALING_SERVER` → public y-webrtc servers (fallback
+  only). NAT traversal uses Google STUN by default plus an optional TURN relay
+  (*Profile* or `VITE_TURN_URL/USERNAME/CREDENTIAL`), passed to simple-peer as
+  `peerOpts.config.iceServers`.
 
 ### Known limitations (honest)
 
@@ -165,9 +179,16 @@ latex-p2p-editor/
   and the host rewrites the result; the cloud may leave a *conflicted copy* that
   can be deleted. There is no "zero conflicts" guarantee without a server.
 - **Signaling.** Peers need a rendezvous point to find each other over the
-  Internet; the public y-webrtc servers are third-party. You can set your own
-  in *Profile* or with `VITE_SIGNALING_SERVER` (see `signaling-server/`).
-  Symmetric NATs additionally need a TURN relay.
+  Internet (never for the content). Deploy your own with
+  [`render.yaml`](render.yaml) or [`signaling-server/fly.toml`](signaling-server/fly.toml)
+  and set it in *Profile* or with `VITE_SIGNALING_SERVER`; the public y-webrtc
+  servers are third-party and only a fallback. If none answers, the top bar
+  says so (*No signaling*). On Render's free plan the first connection after
+  idle time takes 30-60 s while the instance wakes up.
+- **Symmetric NATs.** With STUN alone, two peers behind symmetric NATs
+  (corporate networks, 4G/5G) cannot connect: a **TURN** relay is required
+  (*Profile → TURN relay* or `VITE_TURN_*`; coturn or a managed provider). The
+  app ships none by default. The room panel shows whether TURN is configured.
 - **Single editable file.** The whole project is compiled (`\input`, `.bib`,
   figures) but the editor opens only the root file. The backend already handles
   arbitrary paths; multi-file editing is the next step.
@@ -181,7 +202,7 @@ latex-p2p-editor/
 
 ```bash
 cd latex-p2p-editor
-npm test                 # vitest: CRDT seeding, log parser, CollabManager, signaling, i18n, recents, templates, diffs
+npm test                 # vitest: CRDT seeding, log parser, CollabManager, encrypted signaling, STUN/TURN, i18n, recents, templates, diffs
 npm run build            # tsc + vite
 
 cd src-tauri
