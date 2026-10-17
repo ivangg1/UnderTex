@@ -48,6 +48,9 @@ pub struct ProjectData {
     pub is_collab: bool,
     /// The deterministic WebRTC room ID for this project folder (collab mode only).
     pub room_id: Option<String>,
+    /// Root file recorded in `room.json` (collab mode only). The shared CRDT text
+    /// of older rooms belongs to this file, whatever root is opened now.
+    pub room_main_file: Option<String>,
     /// Raw bytes of `.texcollab/crdt_state.bin`, if any.
     pub crdt_state: Option<Vec<u8>>,
     /// Desktop sync client keeping the folder in the cloud (Google Drive, iCloud, …) or `local`.
@@ -229,6 +232,7 @@ pub fn read_project(project_path: &str, preferred_main: Option<&str>) -> Result<
         tex_files,
         tex_content,
         is_collab: room_meta.is_some(),
+        room_main_file: room_meta.as_ref().and_then(|m| m.main_file.clone()),
         room_id: room_meta.map(|m| m.room_id),
         crdt_state,
         cloud: cloud::detect(&path),
@@ -397,6 +401,23 @@ pub fn read_project_file(project_path: &str, rel_path: &str) -> Result<String, S
     let dir = PathBuf::from(project_path);
     let target = resolve_inside(&dir, rel_path)?;
     fs::read_to_string(&target).map_err(|e| format!("Failed to read {rel_path}: {e}"))
+}
+
+/// Largest file served to the previews (images, PDFs).
+pub const MAX_PREVIEW_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Raw bytes of a project file, for previews. Refuses paths outside the project
+/// and files above [`MAX_PREVIEW_BYTES`].
+pub fn read_project_file_bytes(project_path: &str, rel_path: &str) -> Result<Vec<u8>, String> {
+    let target = resolve_inside(&PathBuf::from(project_path), rel_path)?;
+    let meta = fs::metadata(&target).map_err(|e| format!("Failed to read {rel_path}: {e}"))?;
+    if !meta.is_file() {
+        return Err(format!("'{rel_path}' is not a file"));
+    }
+    if meta.len() > MAX_PREVIEW_BYTES {
+        return Err(format!("'{rel_path}' is too large to preview ({} MB)", meta.len() / (1024 * 1024)));
+    }
+    fs::read(&target).map_err(|e| format!("Failed to read {rel_path}: {e}"))
 }
 
 /// Safely write/save an arbitrary file within the project atomically.
@@ -601,6 +622,11 @@ mod tests {
         let proj = read_project(dir.to_str().unwrap(), None).unwrap();
         assert!(proj.is_collab);
         assert_eq!(proj.main_file, "paper.tex", "room.json must override the main.tex default");
+        assert_eq!(proj.room_main_file.as_deref(), Some("paper.tex"));
+        // Opening another root keeps telling which file the room's text belongs to.
+        let other = read_project(dir.to_str().unwrap(), Some("main.tex")).unwrap();
+        assert_eq!(other.main_file, "main.tex");
+        assert_eq!(other.room_main_file.as_deref(), Some("paper.tex"));
         assert!(proj.tex_content.ends_with("paper"));
         let _ = fs::remove_dir_all(&dir);
     }
@@ -761,6 +787,20 @@ mod tests {
         delete_project_node(dir_str, "notes").unwrap();
         assert!(!dir.join("notes").exists());
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_project_file_bytes_serves_binary_files_inside_the_project_only() {
+        let dir = temp_project("bytes");
+        let dir_str = dir.to_str().unwrap();
+        fs::create_dir_all(dir.join("figures")).unwrap();
+        let png = [0x89u8, b'P', b'N', b'G', 0, 255];
+        fs::write(dir.join("figures/plot.png"), png).unwrap();
+        assert_eq!(read_project_file_bytes(dir_str, "figures/plot.png").unwrap(), png);
+        assert!(read_project_file_bytes(dir_str, "figures").is_err(), "folders are not files");
+        assert!(read_project_file_bytes(dir_str, "missing.png").is_err());
+        assert!(read_project_file_bytes(dir_str, "../outside.png").is_err());
         let _ = fs::remove_dir_all(&dir);
     }
 

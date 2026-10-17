@@ -1,3 +1,9 @@
+// Project file tree (Files view of the side panel): folders and files with
+// per-type icons, the root file marked, peers' presence, inline create /
+// rename / delete and "set as main file". Text files open in the editor,
+// images and PDFs in a preview. Files that only exist in the room (shared by a
+// peer, not in this folder) are shown in italics.
+
 import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
 import {
   BookOpen,
@@ -14,22 +20,23 @@ import {
   FolderOpen,
   FolderPlus,
   Image as ImageIcon,
-  PanelLeftClose,
   Sliders,
   Trash2,
   X,
 } from "lucide-react";
-import type { ProjectNode } from "../services/tauriBridge";
+import type { TreeNode } from "../services/projectFiles";
+import type { PeerInfo } from "../services/collabManager";
 import { useI18n } from "../i18n";
 
-export type FileType = "tex" | "bib" | "style" | "image" | "text" | "other";
+export type FileType = "tex" | "bib" | "style" | "image" | "pdf" | "text" | "other";
 
 export function getFileType(name: string): FileType {
   const ext = name.split(".").pop()?.toLowerCase();
   if (ext === "tex") return "tex";
   if (ext === "bib") return "bib";
   if (ext === "sty" || ext === "cls") return "style";
-  if (["png", "jpg", "jpeg", "gif", "svg", "webp", "pdf", "bmp"].includes(ext || "")) return "image";
+  if (ext === "pdf") return "pdf";
+  if (["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp"].includes(ext || "")) return "image";
   if (["txt", "md", "markdown", "json", "yaml", "yml", "xml", "csv", "latexmkrc"].includes(ext || "")) return "text";
   return "other";
 }
@@ -37,6 +44,12 @@ export function getFileType(name: string): FileType {
 export function isEditableFile(name: string): boolean {
   const type = getFileType(name);
   return type === "tex" || type === "bib" || type === "style" || type === "text";
+}
+
+/** Binary files the app can show (images, PDFs). */
+export function isPreviewableFile(name: string): boolean {
+  const type = getFileType(name);
+  return type === "image" || type === "pdf";
 }
 
 export function getFileIcon(name: string): ReactNode {
@@ -50,6 +63,8 @@ export function getFileIcon(name: string): ReactNode {
       return <Sliders size={14} className="text-mk-purple shrink-0" />;
     case "image":
       return <ImageIcon size={14} className="text-mk-green shrink-0" />;
+    case "pdf":
+      return <FileText size={14} className="text-mk-red shrink-0" />;
     case "text":
       return <FileCode size={14} className="text-mk-blue shrink-0" />;
     default:
@@ -58,15 +73,20 @@ export function getFileIcon(name: string): ReactNode {
 }
 
 export interface FileTreeProps {
-  nodes: ProjectNode[];
+  nodes: TreeNode[];
   activeFile: string | null;
   rootFile: string | null;
+  /** Open tabs (marked in the tree). */
+  openFiles?: string[];
+  /** Room peers: a colored dot shows who has which file open. */
+  peers?: PeerInfo[];
   onSelectFile: (path: string) => void;
   onSetRootFile?: (path: string) => void;
   onCreateNode: (relPath: string, isDir: boolean) => Promise<void>;
   onRenameNode: (oldRelPath: string, newRelPath: string) => Promise<void>;
   onDeleteNode: (relPath: string) => Promise<void>;
-  onToggleCollapse: () => void;
+  /** Bumped by the panel header buttons to start creating a file / folder at the root. */
+  createRequest?: { isDir: boolean; seq: number } | null;
 }
 
 interface CreatingState {
@@ -83,12 +103,14 @@ export default function FileTree({
   nodes,
   activeFile,
   rootFile,
+  openFiles = [],
+  peers = [],
   onSelectFile,
   onSetRootFile,
   onCreateNode,
   onRenameNode,
   onDeleteNode,
-  onToggleCollapse,
+  createRequest = null,
 }: FileTreeProps) {
   const { t } = useI18n();
 
@@ -134,6 +156,10 @@ export default function FileTree({
     setCreateInput(isDir ? "new_folder" : "new_file.tex");
   };
 
+  useEffect(() => {
+    if (createRequest) handleStartCreate(createRequest.isDir);
+  }, [createRequest]);
+
   const handleConfirmCreate = async () => {
     if (!creating) return;
     const name = createInput.trim();
@@ -151,7 +177,7 @@ export default function FileTree({
     }
   };
 
-  const handleStartRename = (node: ProjectNode) => {
+  const handleStartRename = (node: TreeNode) => {
     setRenaming({ oldRelPath: node.path, name: node.name });
   };
 
@@ -188,12 +214,14 @@ export default function FileTree({
     }
   };
 
-  const renderTree = (items: ProjectNode[], depth = 0): ReactNode => {
+  const renderTree = (items: TreeNode[], depth = 0): ReactNode => {
     return items.map((node) => {
       const isDir = node.is_dir;
       const isCollapsed = collapsedDirs.has(node.path);
       const isActive = !isDir && activeFile === node.path;
       const isRoot = !isDir && rootFile === node.path;
+      const isOpen = !isDir && openFiles.includes(node.path);
+      const here = isDir ? [] : peers.filter((p) => !p.isSelf && p.file === node.path);
       const isRenamingThis = renaming?.oldRelPath === node.path;
 
       if (isRenamingThis) {
@@ -206,6 +234,9 @@ export default function FileTree({
             {isDir ? <Folder size={14} className="text-mk-fg2 shrink-0" /> : getFileIcon(node.name)}
             <input
               ref={renameInputRef}
+              spellCheck={false}
+              autoCorrect="off"
+              autoCapitalize="off"
               type="text"
               value={renaming.name}
               onChange={(e) => setRenaming({ ...renaming, name: e.target.value })}
@@ -261,7 +292,21 @@ export default function FileTree({
             )}
 
             {/* Filename */}
-            <span className="truncate flex-1 font-mono text-[11px]">{node.name}</span>
+            <span
+              className={`truncate flex-1 font-mono text-[11px] ${node.remote ? "italic text-mk-fg3" : ""} ${isOpen && !isActive ? "text-mk-fg" : ""}`}
+              title={node.remote ? t("files.remote") : node.path}
+            >
+              {node.name}
+            </span>
+
+            {/* Peers with this file open */}
+            {here.length > 0 && (
+              <span className="flex -space-x-0.5 shrink-0" title={here.map((p) => p.name).join(", ")}>
+                {here.slice(0, 3).map((p) => (
+                  <span key={p.clientID} className="w-2 h-2 rounded-full ring-1 ring-mk-bg2" style={{ backgroundColor: p.color }} />
+                ))}
+              </span>
+            )}
 
             {/* Root / Main file badge */}
             {isRoot && (
@@ -334,40 +379,7 @@ export default function FileTree({
   };
 
   return (
-    <aside
-      aria-label={t("files.title")}
-      className="w-60 shrink-0 flex flex-col bg-mk-bg2 border-r border-mk-bg3 select-none text-xs"
-    >
-      {/* Header */}
-      <div className="h-9 shrink-0 flex items-center justify-between px-3 border-b border-mk-bg3 bg-mk-bg2">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-mk-fg3">
-          {t("files.title")}
-        </span>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => handleStartCreate(false)}
-            className="p-1.5 text-mk-fg3 hover:text-mk-fg hover:bg-mk-bg3 rounded cursor-pointer transition-colors"
-            title={t("files.newFile")}
-          >
-            <FilePlus size={14} />
-          </button>
-          <button
-            onClick={() => handleStartCreate(true)}
-            className="p-1.5 text-mk-fg3 hover:text-mk-fg hover:bg-mk-bg3 rounded cursor-pointer transition-colors"
-            title={t("files.newFolder")}
-          >
-            <FolderPlus size={14} />
-          </button>
-          <button
-            onClick={onToggleCollapse}
-            className="p-1.5 text-mk-fg3 hover:text-mk-fg hover:bg-mk-bg3 rounded cursor-pointer transition-colors ml-1"
-            title={t("files.togglePanel")}
-          >
-            <PanelLeftClose size={14} />
-          </button>
-        </div>
-      </div>
-
+    <div aria-label={t("files.title")} className="h-full flex flex-col select-none text-xs">
       {/* Inline Create Input */}
       {creating && (
         <div className="p-2 border-b border-mk-bg3 bg-mk-bg flex items-center gap-1.5">
@@ -378,6 +390,9 @@ export default function FileTree({
           )}
           <input
             ref={createInputRef}
+            spellCheck={false}
+            autoCorrect="off"
+            autoCapitalize="off"
             type="text"
             value={createInput}
             onChange={(e) => setCreateInput(e.target.value)}
@@ -439,6 +454,6 @@ export default function FileTree({
           </div>
         </div>
       )}
-    </aside>
+    </div>
   );
 }

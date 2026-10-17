@@ -46,7 +46,8 @@ compile limits.
   ana@gmail.com*. Detection is path-based only (macOS `~/Library/CloudStorage`,
   `G:\My Drive`, `%USERPROFILE%\OneDrive`, `~/Dropbox`, …), no cloud API or
   sign-in. When a host's project is local, the panel reminds them that guests
-  only get the root `.tex` live, not images or `.bib` files.
+  only get files from peers who are online (open text files live, the rest as
+  copies), and suggests a shared cloud folder.
 - **Dynamic host election**: in a room only the peer with the lowest `clientID`
   writes to disk (this is what avoids Drive/iCloud *conflicted copies*). If the
   host drops, the next peer takes over within milliseconds and consolidates the
@@ -63,13 +64,60 @@ compile limits.
   document and restore with minimal edits (peers merge it like any edit).
 - **PDF preview** with pdf.js: keeps scroll and zoom across builds, lazy page
   rendering, export.
-- **Clickable errors**: compiler output is parsed into an error/warning list; a
-  click jumps to the line in the editor.
-- **IDE layout**: action rail on the left (New, Open, Join, Share/Room, Build,
-  Auto, Export, History, profile, language), top bar with project › root file
-  and live status (mode, connection, save state, compiler, last build),
-  draggable editor | PDF split, Monokai Pro palette. English and Spanish UI
-  (auto-detected, switchable in the profile). UI zoom with `⌥`/`⌘` `+` `−` `0`.
+- **Multi-file editing**: a project file tree (folders, per-type icons for
+  `.tex`, `.bib`, `.sty`/`.cls`, images and PDFs, the root file marked with a
+  crown) with create / rename / delete and *Set as main file*. Text files open
+  in tabs; images and PDFs open in a read-only preview. Every open file keeps
+  its own cursor and undo history across tab switches.
+- **Every file is collaborative**: in a room each text file gets its own shared
+  text, so peers edit chapters, `.bib` and `.sty` files live, see who has which
+  file open (colored dots in the tree and tabs), and a guest who joined by room
+  ID sees the host's files in the tree even when they are not on its disk. The
+  root file choice is shared with the room.
+- **What you see is what compiles**: a build uses the editor's content of every
+  file the session holds (unsaved edits and edits from peers included), written
+  over their copies in the build cache only.
+- **Clickable errors across files**: compiler output is parsed into an
+  error/warning list; a click opens the right file at the right line (paths are
+  resolved from the root file's folder, also for nested roots). The status bar
+  shows the error / warning count.
+- **Outline and quick navigation**: an *Outline* view lists the sections of the
+  open file (the one at the cursor highlighted) and its `\input`/`\include`d
+  files (click to open; missing ones flagged). `⌘P` fuzzy-finds any file, `@`
+  in the same box jumps to a section, `:` to a line.
+- **IDE layout**: the top bar holds the project menu (new, open, join, recent,
+  new window), the root file, *Go to file…* and the primary actions — **Build**
+  (with the auto-build switch), **Share** / Room and **Export** — plus the
+  build options (scope, draft, preamble). The left rail switches views (Files,
+  Outline, History, Room) with one side panel at a time; a bottom status bar
+  shows mode, connection, save state, problems, cursor line, compiler and the
+  last build. Draggable editor | PDF split, Monokai Pro palette. English and
+  Spanish UI (auto-detected, switchable in the profile).
+
+#### Keyboard shortcuts
+
+| Action | macOS | Windows / Linux |
+| --- | --- | --- |
+| Build | `⌘S` or `⌘↵` | `Ctrl+S` or `Ctrl+Enter` |
+| Go to file | `⌘P` | `Ctrl+P` |
+| Go to section of the open file | `⌘⇧O` | `Ctrl+Shift+O` |
+| Go to line | `⌃G` | `Ctrl+G` |
+| Toggle side panel | `⌘B` | `Ctrl+B` |
+| Files / Outline / History view | `⌘⇧E` / `⌘⇧L` / `⌘⇧H` | `Ctrl+Shift+E` / `L` / `H` |
+| Next / previous tab | `⌃Tab` / `⌃⇧Tab` | `Ctrl+Tab` / `Ctrl+Shift+Tab` |
+| Export PDF | `⌘E` | `Ctrl+E` |
+| Open folder | `⌘O` | `Ctrl+O` |
+| UI zoom | `⌘`/`⌥` `+` `−` `0` | `Ctrl`/`Alt` `+` `−` `0` |
+
+Tabs close with `×` or a middle click (`⌘W` is left to the window).
+
+#### Compared with Overleaf
+
+The layout borrows the familiar parts (tree, editor, PDF) but differs where it
+matters for a local, serverless editor: builds run on your machine (no queue,
+incremental build cache, chapter-only and draft builds), collaboration is
+peer-to-peer with no account or server, errors open the right file directly,
+and navigation is keyboard-first (fuzzy file search, section and line jumps).
 
 ## Install and run
 
@@ -182,6 +230,24 @@ latex-p2p-editor/
   cache under the project folder in the build directory. Transfers are not
   edits: they never trigger a `main.tex` save. The per-file limit is 20 MB
   (`localStorage["latex_asset_max_mb"]` changes it).
+- **One shared text per file** (`collabManager.ts`). The root file keeps the
+  legacy `codemirror` Y.Text, so peers on older versions still meet in the same
+  text; every other file is a top-level `file:<relative path>` Y.Text, created
+  when a peer opens it and listed in a `files` Y.Map registry. Opening a file
+  waits for the room's initial sync (or the seed wait) and seeds from disk only
+  when nobody shared it yet; seeds are deterministic per key and content, so two
+  peers seeding the same file converge. The doc records which file the legacy
+  text belongs to (`meta.primaryFile`, falling back to `room.json`), so choosing
+  another root never maps that text onto the wrong file. The host tracks which
+  texts each transaction changed and writes only those files (`write_atomic`,
+  serialized with the root file and `crdt_state.bin`); files that left the
+  registry (deleted, renamed) are never written back. A rename moves the text to
+  the new path; a deleted path re-created later takes the disk content.
+- **Builds from memory** (`compiler.rs::apply_file_overrides`). After the
+  incremental asset sync, the editor's text of every shared file is written over
+  its copy in the build cache (identical content is not rewritten, so engine
+  caches stay warm) and its manifest entry is invalidated, so the next build
+  restores the disk version when the file is no longer overridden.
 - **Self-contained build cache.** The user's folder is copied incrementally
   into the OS temp directory (`build-<fnv64(canonical_path)>`), intermediates
   stay there across builds, and the PDF is read back into RAM. The project
@@ -198,13 +264,11 @@ latex-p2p-editor/
   Internet; the public y-webrtc servers are third-party. You can deploy your own
   with `render.yaml` or `signaling-server/fly.toml` and configure it in *Profile* or with
   `VITE_SIGNALING_SERVER`. Symmetric NATs additionally need a TURN relay.
-- **Single editable file.** The whole project is compiled (`\input`, `.bib`,
-  figures) but the editor opens only the root file. The backend already handles
-  arbitrary paths; multi-file tabbed editing is the next step.
-- **Shared files are read-only copies.** Chapters and `.bib` files reach guests
-  as files, not as collaborative text: edits to them propagate when the owner
-  saves them (the folder is rescanned every 4 s), and concurrent edits of the
-  same file on two machines are last-writer-wins. Files above the transfer
+- **Files nobody opened travel as files.** A chapter or `.bib` becomes
+  collaborative text once someone opens it; until then it reaches guests as a
+  file (rescanned every 4 s, last writer wins). Images and PDFs always travel as
+  files. Version history covers the room's primary (original root) file only,
+  and in a room that file cannot be renamed or deleted. Files above the transfer
   limit, and files only an offline peer has, must be copied by hand. The
   transfer runs over the CRDT connection, so it is meant for typical thesis
   assets (megabytes), not gigabytes.
@@ -256,9 +320,9 @@ installs. [`ci.yml`](.github/workflows/ci.yml) runs vitest, the build and
 
 ```bash
 cd latex-p2p-editor
-npm test                 # vitest: CRDT seed, parser, CollabManager, asset sync protocol, encrypted signaling, STUN/TURN, i18n, templates, diffs, chapters, build modes
+npm test                 # vitest: CRDT seed, parser, CollabManager, multi-file collaboration, outline, quick open, shortcuts, file tree, asset sync protocol, encrypted signaling, STUN/TURN, i18n, templates, diffs, chapters, build modes
 npm run build            # tsc + vite
 
 cd src-tauri
-cargo test               # project, history, fsutil, assets (listing, cache), compiler: room-cache merge, includeonly/draft/preamble rewrites, format cache, real chapter builds
+cargo test               # project (tree, file ops, binary previews), history, fsutil, assets (listing, cache), compiler: editor overrides, room-cache merge, includeonly/draft/preamble rewrites, format cache, real chapter builds
 ```

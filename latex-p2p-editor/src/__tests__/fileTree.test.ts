@@ -24,7 +24,7 @@ describe("File type detection", () => {
     expect(getFileType("figure.png")).toBe("image");
     expect(getFileType("photo.jpg")).toBe("image");
     expect(getFileType("plot.jpeg")).toBe("image");
-    expect(getFileType("diagram.pdf")).toBe("image");
+    expect(getFileType("diagram.pdf")).toBe("pdf");
     expect(getFileType("logo.svg")).toBe("image");
   });
 
@@ -106,7 +106,6 @@ describe("FileTree rendering", () => {
         onCreateNode: vi.fn(),
         onRenameNode: vi.fn(),
         onDeleteNode: vi.fn(),
-        onToggleCollapse: vi.fn(),
       })
     );
 
@@ -121,8 +120,29 @@ describe("FileTree rendering", () => {
     // Root file should have the main badge
     expect(html).toContain("main");
 
-    // Title should be present
-    expect(html).toContain("aside");
+    // Rendered as the Files view of the side panel
+    expect(html).toContain('aria-label="Files"');
+  });
+
+  it("marks files shared only by peers and shows who has a file open", () => {
+    const html = renderWithI18n(
+      React.createElement(FileTree, {
+        nodes: [
+          { name: "main.tex", path: "main.tex", is_dir: false },
+          { name: "remote.tex", path: "remote.tex", is_dir: false, remote: true },
+        ],
+        activeFile: "main.tex",
+        rootFile: "main.tex",
+        peers: [{ clientID: 7, name: "Ada", color: "#ff0000", isHost: false, isSelf: false, file: "remote.tex" }],
+        onSelectFile: vi.fn(),
+        onCreateNode: vi.fn(),
+        onRenameNode: vi.fn(),
+        onDeleteNode: vi.fn(),
+      })
+    );
+    expect(html).toContain("italic");
+    expect(html).toContain('title="Ada"');
+    expect(html).toContain("background-color:#ff0000");
   });
 
   it("renders empty state when there are no nodes", () => {
@@ -135,7 +155,6 @@ describe("FileTree rendering", () => {
         onCreateNode: vi.fn(),
         onRenameNode: vi.fn(),
         onDeleteNode: vi.fn(),
-        onToggleCollapse: vi.fn(),
       })
     );
 

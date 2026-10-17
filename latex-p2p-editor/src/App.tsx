@@ -4,6 +4,7 @@ import { documentDir } from "@tauri-apps/api/path";
 
 import Sidebar, { type PanelId } from "./components/Sidebar";
 import TopBar from "./components/TopBar";
+import StatusBar from "./components/StatusBar";
 import Welcome from "./components/Welcome";
 import SplitPane from "./components/SplitPane";
 import CollabPanel from "./components/CollabPanel";
@@ -14,7 +15,11 @@ import HistoryPanel from "./components/HistoryPanel";
 import DiffView from "./components/DiffView";
 import LatexEditor, { type LatexEditorHandle } from "./components/LatexEditor";
 import PdfPreview, { type CompileSummary } from "./components/PdfPreview";
-import FileTree, { isEditableFile } from "./components/FileTree";
+import FileTree, { isEditableFile, isPreviewableFile } from "./components/FileTree";
+import EditorTabs from "./components/EditorTabs";
+import OutlinePanel from "./components/OutlinePanel";
+import QuickOpen, { type QuickOpenMode } from "./components/QuickOpen";
+import AssetPreview from "./components/AssetPreview";
 import {
   pickProjectFolder,
   pickParentFolder,
@@ -48,7 +53,6 @@ import {
   type CompileOutput,
   type CompilerInfo,
   type SnapshotMeta,
-  type ProjectNode,
 } from "./services/tauriBridge";
 import { findIncludes } from "./services/chapters";
 import {
@@ -72,7 +76,7 @@ import {
   type UpdateState,
 } from "./services/updater";
 import UpdateBanner from "./components/UpdateBanner";
-import { Cloud, Download, RefreshCw } from "lucide-react";
+import { Cloud, Download, FilePlus, FolderPlus, Loader2, RefreshCw } from "lucide-react";
 import {
   CollabManager,
   type RoomInfo,
@@ -87,6 +91,16 @@ import { parseLatexLog, type LatexDiagnostic } from "./services/latexLog";
 import { EMPTY_ASSET_STATUS, explainMissingAsset, type AssetSyncStatus } from "./services/assetSync";
 import { addRecent, readRecents, removeRecent, type RecentProject } from "./services/recents";
 import { findTemplate } from "./services/templates";
+import { chapterOfFile, parseOutline, type OutlineItem } from "./services/outline";
+import {
+  flattenFiles,
+  isSameOrInside,
+  mergeSharedFiles,
+  renamePath,
+  resolveDiagnosticFile,
+  type TreeNode,
+} from "./services/projectFiles";
+import { isMac, matchShortcut, shortcutLabel } from "./services/shortcuts";
 import { useI18n, type MessageKey } from "./i18n";
 import type * as Y from "yjs";
 import type { Awareness } from "y-protocols/awareness";
@@ -94,12 +108,15 @@ import type { Awareness } from "y-protocols/awareness";
 const AUTO_COMPILE_KEY = "latex_auto_compile";
 const BUILD_DRAFT_KEY = "latex_build_draft";
 const BUILD_PREAMBLE_KEY = "latex_build_preamble";
+const SIDEBAR_KEY = "latex_sidebar_view";
 const AUTO_COMPILE_DEBOUNCE_MS = 2500;
 const AUTO_SNAPSHOT_INTERVAL_MS = 2 * 60 * 1000;
+const OUTLINE_DEBOUNCE_MS = 250;
 const UI_ZOOM_KEY = "latex_ui_zoom";
 const UI_ZOOM_MIN = 0.6;
 const UI_ZOOM_MAX = 1.8;
 const UI_ZOOM_STEP = 0.1;
+const MAC = isMac();
 
 function getSavedUser(): CollabUser {
   // sessionStorage: each window/instance gets its own identity.
@@ -142,23 +159,38 @@ function writeFlag(key: string, value: boolean): void {
   }
 }
 
+/** Side view shown when a project opens (the last one used, Files by default). */
+function readSidebarView(): PanelId | null {
+  try {
+    const v = localStorage.getItem(SIDEBAR_KEY);
+    if (v === "none") return null;
+    if (v === "files" || v === "outline" || v === "history") return v;
+  } catch {
+    // ignore
+  }
+  return "files";
+}
+
 function errorMessage(err: unknown): string {
   return typeof err === "string" ? err : err instanceof Error ? err.message : String(err);
 }
 
 interface ProjectInfo {
   path: string;
-  mainFile: string;
-  activeFile: string;
-  texFiles: string[];
+  /** File compiled as the document root (can be changed with "Set as main file"). */
+  rootFile: string;
+  /** File whose text is the room's legacy shared text; snapshots cover it. */
+  primaryFile: string;
   cloud: CloudLocation;
 }
 
 /** The editor binds to these; a new object means a new editor instance. */
 interface EditorSession {
   key: string;
+  path: string;
   ytext: Y.Text;
   awareness: Awareness;
+  undoManager: Y.UndoManager;
 }
 
 interface CompileState {
@@ -205,9 +237,17 @@ function App() {
 
   // ─── Project & session ──────────────────────────────────────────
   const [project, setProject] = useState<ProjectInfo | null>(null);
-  const [fileTree, setFileTree] = useState<ProjectNode[]>([]);
-  const [showFileTree, setShowFileTree] = useState<boolean>(() => readFlag("latex_show_file_tree", true));
+  const [fileTree, setFileTree] = useState<TreeNode[]>([]);
+  const [sharedFiles, setSharedFiles] = useState<string[]>([]);
+  const [tabs, setTabs] = useState<string[]>([]);
+  const [activeFile, setActiveFile] = useState<string | null>(null);
   const [session, setSession] = useState<EditorSession | null>(null);
+  const [opening, setOpening] = useState<string | null>(null);
+  const [cursorLine, setCursorLine] = useState(1);
+  const [outline, setOutline] = useState<OutlineItem[]>([]);
+  const [quickOpen, setQuickOpen] = useState<QuickOpenMode | null>(null);
+  const [createRequest, setCreateRequest] = useState<{ isDir: boolean; seq: number } | null>(null);
+  const [problemsRequest, setProblemsRequest] = useState(0);
   const [banner, setBanner] = useState<Banner | null>(null);
   const [recents, setRecents] = useState<RecentProject[]>(() => readRecents());
   const [activePanel, setActivePanel] = useState<PanelId | null>(null);
@@ -224,14 +264,6 @@ function App() {
 
   // ─── Auto-update ────────────────────────────────────────────────
   const [updateState, setUpdateState] = useState<UpdateState>({ status: "idle" });
-
-  const handleToggleFileTree = useCallback(() => {
-    setShowFileTree((prev) => {
-      const next = !prev;
-      writeFlag("latex_show_file_tree", next);
-      return next;
-    });
-  }, []);
 
   // ─── Collaboration ──────────────────────────────────────────────
   const [currentUser, setCurrentUser] = useState<CollabUser>(getSavedUser);
@@ -291,6 +323,20 @@ function App() {
   currentUserRef.current = currentUser;
   const projectRef = useRef(project);
   projectRef.current = project;
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  const activeFileRef = useRef(activeFile);
+  activeFileRef.current = activeFile;
+  /** Root file text read from disk when the room does not hold it as text. */
+  const rootDiskTextRef = useRef<string>("");
+  /** Cursor offset per file, restored when coming back to a tab. */
+  const anchorsRef = useRef(new Map<string, number>());
+  /** Most recently used files first (quick open). */
+  const recentFilesRef = useRef<string[]>([]);
+  /** Guards against an older, slower file open finishing after a newer one. */
+  const openSeqRef = useRef(0);
+  /** A line to jump to once the editor of that file is mounted. */
+  const pendingJumpRef = useRef<{ path: string; line: number } | null>(null);
 
   const compilerHint =
     compilerInfo && compilerInfo.name === null ? t(`compiler.hint.${compilerInfo.os}` as MessageKey) : null;
@@ -328,6 +374,14 @@ function App() {
     };
   }, []);
 
+  /** Text of the root file: the room's (or editor's) copy, else what is on disk. */
+  const rootText = useCallback((): string => {
+    const manager = managerRef.current;
+    const current = projectRef.current;
+    if (!manager || !current) return "";
+    return manager.getFileText(current.rootFile) ?? rootDiskTextRef.current;
+  }, []);
+
   // ─── Compile ────────────────────────────────────────────────────
   /** Runs one build; resolves to the backend result, or `null` when skipped/queued/failed. */
   const runCompile = useCallback(async (opts: CompileRequest = {}): Promise<CompileOutput | null> => {
@@ -339,27 +393,25 @@ function App() {
       compileQueuedRef.current = { auto: auto && (compileQueuedRef.current?.auto ?? true) };
       return null;
     }
-    await manager.flushSave();
-    let rootText: string;
-    if (current.activeFile === current.mainFile) {
-      rootText = manager.getText();
-    } else {
-      try {
-        rootText = await readProjectFile(current.path, current.mainFile);
-      } catch (err) {
-        console.error("Failed to read root file for compile:", err);
-        rootText = manager.getText();
-      }
-    }
+    const root = current.rootFile;
+    const text = rootText();
+    // Every other file the editor holds (open tabs, files peers edit) replaces
+    // its disk copy for this build: what you see is what compiles.
+    const openFiles = manager.fileContents();
+    delete openFiles[root];
+    const includes = findIncludes(text);
+    const active = activeFileRef.current;
+    const cursorChapter =
+      active === root ? (editorRef.current?.getActiveChapter() ?? null) : active ? chapterOfFile(active, root, includes) : null;
     // The build mode only touches the build copy of the root file; Export asks for a plain build.
     const options: BuildOptions = opts.plain
       ? PLAIN_BUILD
       : resolveBuildOptions(
           opts.settings ?? buildSettingsRef.current,
-          findIncludes(rootText).map((c) => c.name),
-          editorRef.current?.getActiveChapter() ?? null
+          includes.map((c) => c.name),
+          cursorChapter
         );
-    const key = buildKey(rootText, options);
+    const key = buildKey(`${root}\u0000${text}\u0000${JSON.stringify(openFiles)}`, options);
     // Automatic builds skip unchanged input (text + mode); a manual build always runs.
     if (auto && lastCompiledRef.current && lastCompiledRef.current.key === key && lastCompiledRef.current.success) {
       return null;
@@ -371,7 +423,7 @@ function App() {
       await manager.flushSave();
       // In a room, files received from peers fill in what the project folder lacks.
       const roomId = manager.mode === "collab" ? manager.roomId : null;
-      const result = await compileLatex(current.path, current.mainFile, rootText, options, undefined, roomId);
+      const result = await compileLatex(current.path, root, text, options, undefined, roomId, openFiles);
       const parsed = parseLatexLog(result.logs);
       let pdfData: Uint8Array | null = null;
       if (result.pdf_path) {
@@ -416,25 +468,25 @@ function App() {
         setTimeout(() => void runCompile(queued), 0);
       }
     }
-  }, []);
+  }, [rootText]);
 
   const handleCompile = useCallback(() => void runCompile(), [runCompile]);
 
   // Chapters (`\include`) of the root file, kept current for the scope control.
   useEffect(() => {
     const manager = managerRef.current;
-    if (!manager || !session) {
+    if (!manager || !project) {
       setChapters([]);
       return;
     }
     const update = () => {
-      const names = Array.from(new Set(findIncludes(manager.getText()).map((c) => c.name)));
+      const names = Array.from(new Set(findIncludes(rootText()).map((c) => c.name)));
       setChapters((prev) => (prev.length === names.length && prev.every((n, i) => n === names[i]) ? prev : names));
     };
     update();
     manager.doc.on("update", update);
     return () => manager.doc.off("update", update);
-  }, [session]);
+  }, [project?.path, project?.rootFile, session?.key, rootText]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Applies a build-mode change and, with auto build on, rebuilds right away. */
   const updateBuildSettings = useCallback(
@@ -458,10 +510,11 @@ function App() {
     [updateBuildSettings]
   );
 
-  // Auto-compile: debounce document updates.
+  // Auto-compile: debounce document updates (any file).
+  const managerKey = project?.path ?? null;
   useEffect(() => {
     const manager = managerRef.current;
-    if (!autoCompile || !manager || !session) return;
+    if (!autoCompile || !manager || !managerKey) return;
     const onUpdate = () => {
       if (autoCompileTimer.current) clearTimeout(autoCompileTimer.current);
       autoCompileTimer.current = setTimeout(() => {
@@ -477,7 +530,7 @@ function App() {
         autoCompileTimer.current = null;
       }
     };
-  }, [autoCompile, session, runCompile]);
+  }, [autoCompile, managerKey, session?.key, runCompile]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const toggleAutoCompile = useCallback(() => {
     setAutoCompileState((prev) => {
@@ -491,7 +544,7 @@ function App() {
     });
   }, []);
 
-  // ─── History ────────────────────────────────────────────────────
+  // ─── History (snapshots of the primary file) ────────────────────
   const refreshSnapshots = useCallback(async (path: string) => {
     try {
       setSnapshots(await historyList(path));
@@ -507,7 +560,7 @@ function App() {
       const current = projectRef.current;
       if (!manager || !current) return;
       try {
-        await historySave(current.path, current.mainFile, manager.getText(), label || null, currentUserRef.current.name);
+        await historySave(current.path, manager.primaryFile, manager.getText(), label || null, currentUserRef.current.name);
         lastAutoSnapshotRef.current = Date.now();
         await refreshSnapshots(current.path);
       } catch (err) {
@@ -586,6 +639,145 @@ function App() {
     [selectedSnapshot, t]
   );
 
+  // ─── Files & tabs ───────────────────────────────────────────────
+  const refreshTree = useCallback(async (projectPath: string) => {
+    try {
+      const nodes = await listProjectFiles(projectPath);
+      if (projectRef.current?.path === projectPath) setFileTree(nodes);
+    } catch (err) {
+      console.error("Failed to list project files:", err);
+    }
+  }, []);
+
+  const touchRecentFile = (path: string) => {
+    recentFilesRef.current = [path, ...recentFilesRef.current.filter((p) => p !== path)].slice(0, 30);
+  };
+
+  /** Opens `path` in a tab (editor for text, preview for images/PDFs) and focuses it. */
+  const openFile = useCallback(
+    async (path: string, line?: number) => {
+      const manager = managerRef.current;
+      const current = projectRef.current;
+      if (!manager || !current) return;
+      const editable = isEditableFile(path);
+      if (!editable && !isPreviewableFile(path)) {
+        setBanner({ kind: "info", text: t("files.cannotOpen", { name: path }) });
+        return;
+      }
+      if (!tabsRef.current.includes(path)) {
+        const next = [...tabsRef.current, path];
+        tabsRef.current = next;
+        setTabs(next);
+      }
+      touchRecentFile(path);
+      setActiveFile(path);
+      activeFileRef.current = path;
+      setSelectedSnapshot(null);
+      manager.setActiveFile(path);
+      if (!editable) {
+        setSession(null);
+        return;
+      }
+      if (line !== undefined) pendingJumpRef.current = { path, line };
+      if (session?.path === path) {
+        if (line !== undefined) {
+          editorRef.current?.goToLine(line);
+          pendingJumpRef.current = null;
+        }
+        return;
+      }
+      const seq = ++openSeqRef.current;
+      setOpening(path);
+      try {
+        let disk: string | null = null;
+        if (!(manager.isShared(path) && manager.getFileText(path) !== null)) {
+          disk = await readProjectFile(current.path, path).catch(() => null);
+        }
+        const ytext = await manager.openFile(path, disk);
+        if (seq !== openSeqRef.current || managerRef.current !== manager) return;
+        setSession({
+          key: `${current.path}::${path}::${seq}`,
+          path,
+          ytext,
+          awareness: manager.awareness,
+          undoManager: manager.undoManagerFor(path),
+        });
+      } catch (err) {
+        console.error("Failed to open file:", err);
+        setBanner({ kind: "error", text: t("files.error.open", { message: errorMessage(err) }) });
+      } finally {
+        if (seq === openSeqRef.current) setOpening(null);
+      }
+    },
+    [session?.path, t]
+  );
+  const openFileRef = useRef(openFile);
+  openFileRef.current = openFile;
+
+  const closeTab = useCallback((path: string) => {
+    const list = tabsRef.current;
+    const index = list.indexOf(path);
+    if (index === -1) return;
+    const next = list.filter((p) => p !== path);
+    tabsRef.current = next;
+    setTabs(next);
+    if (activeFileRef.current === path) {
+      const neighbour = next[Math.min(index, next.length - 1)] ?? null;
+      if (neighbour) void openFileRef.current(neighbour);
+      else {
+        setActiveFile(null);
+        activeFileRef.current = null;
+        setSession(null);
+        managerRef.current?.setActiveFile(null);
+      }
+    }
+  }, []);
+
+  const cycleTab = useCallback((delta: number) => {
+    const list = tabsRef.current;
+    if (list.length < 2) return;
+    const index = Math.max(0, list.indexOf(activeFileRef.current ?? ""));
+    void openFileRef.current(list[(index + delta + list.length) % list.length]);
+  }, []);
+
+  /** Jumps to a line: in the open editor, or opening `path` first. */
+  const goTo = useCallback((path: string | null, line: number) => {
+    const target = path ?? activeFileRef.current;
+    if (!target) return;
+    if (target === activeFileRef.current && editorRef.current) editorRef.current.goToLine(line);
+    else void openFileRef.current(target, line);
+  }, []);
+
+  // The editor of a freshly opened file is mounted: apply a pending jump.
+  useEffect(() => {
+    const pending = pendingJumpRef.current;
+    if (!session || !pending || pending.path !== session.path) return;
+    pendingJumpRef.current = null;
+    const id = setTimeout(() => editorRef.current?.goToLine(pending.line), 0);
+    return () => clearTimeout(id);
+  }, [session]);
+
+  // Outline of the open text file, recomputed shortly after edits.
+  useEffect(() => {
+    if (!session || !project) {
+      setOutline([]);
+      return;
+    }
+    const { ytext } = session;
+    const update = () => setOutline(parseOutline(ytext.toString(), project.rootFile));
+    update();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const onChange = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(update, OUTLINE_DEBOUNCE_MS);
+    };
+    ytext.observe(onChange);
+    return () => {
+      ytext.unobserve(onChange);
+      if (timer) clearTimeout(timer);
+    };
+  }, [session, project?.rootFile]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ─── Open / create project ──────────────────────────────────────
   const openProject = useCallback(
     async (folder: string, mainFile?: string | null) => {
@@ -599,12 +791,25 @@ function App() {
         managerRef.current = null;
       }
 
+      // In a room, the legacy shared text belongs to the root recorded in
+      // room.json, whatever root is opened now.
+      let primary = data.main_file;
+      let primaryText = data.tex_content;
+      if (data.is_collab && data.room_main_file && data.room_main_file !== data.main_file) {
+        try {
+          primaryText = await readProjectFile(data.project_path, data.room_main_file);
+          primary = data.room_main_file;
+        } catch {
+          // The recorded root is gone: fall back to the opened one.
+        }
+      }
+
       const manager = new CollabManager({
         projectPath: data.project_path,
-        mainFile: data.main_file,
+        mainFile: primary,
         isCollab: data.is_collab,
         roomId: data.room_id,
-        initialTexContent: seedTextFor(data.project_path, workspacesDirRef.current, data.tex_content),
+        initialTexContent: seedTextFor(data.project_path, workspacesDirRef.current, primaryText),
         initialCrdtState: data.crdt_state,
         currentUser: currentUserRef.current,
         callbacks: {
@@ -628,20 +833,24 @@ function App() {
         manager.setRoomInfo({ cloud: data.cloud, hostName: currentUserRef.current.name });
       }
 
-      const info = {
+      const info: ProjectInfo = {
         path: data.project_path,
-        mainFile: data.main_file,
-        activeFile: data.main_file,
-        texFiles: data.tex_files,
+        rootFile: data.main_file,
+        primaryFile: manager.primaryFile,
         cloud: data.cloud,
       };
+      rootDiskTextRef.current = data.tex_content;
       projectRef.current = info;
       setProject(info);
-      setSession({
-        key: `${data.project_path}::${data.main_file}::${Date.now()}`,
-        ytext: manager.ytext,
-        awareness: manager.awareness,
-      });
+      tabsRef.current = [];
+      setTabs([]);
+      setActiveFile(null);
+      activeFileRef.current = null;
+      setSession(null);
+      setFileTree([]);
+      anchorsRef.current.clear();
+      recentFilesRef.current = [];
+      setSharedFiles(manager.sharedFiles());
       setMode(manager.mode);
       setRoomId(manager.roomId);
       setIsHost(manager.isHost);
@@ -662,107 +871,65 @@ function App() {
       setSelectedSnapshot(null);
       setSnapshotText(null);
       lastAutoSnapshotRef.current = Date.now();
-      setActivePanel((p) => (p === "join" || p === "new" ? null : p));
+      setActivePanel((p) => (p === "join" || p === "new" || p === null ? readSidebarView() : p));
       setRecents(addRecent({ path: data.project_path, mainFile: data.main_file }));
       void refreshSnapshots(data.project_path);
       void refreshTree(data.project_path);
+      void openFileRef.current(data.main_file);
     },
-    [recordSnapshot, refreshSnapshots]
+    [recordSnapshot, refreshSnapshots, refreshTree]
   );
 
-  const refreshTree = useCallback(async (projectPath: string) => {
-    try {
-      const nodes = await listProjectFiles(projectPath);
-      setFileTree(nodes);
-    } catch (err) {
-      console.error("Failed to list project files:", err);
-    }
-  }, []);
+  // Files shared in the room (registry), for the tree of a guest.
+  useEffect(() => {
+    const manager = managerRef.current;
+    if (!manager || !project) return;
+    const update = () => setSharedFiles(manager.sharedFiles());
+    update();
+    manager.files.observe(update);
+    return () => manager.files.unobserve(update);
+  }, [project?.path]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleSelectFile = useCallback(
-    async (relPath: string) => {
-      const current = projectRef.current;
-      if (!current || relPath === current.activeFile) return;
-      if (!isEditableFile(relPath)) return;
+  // Refresh the tree when the window regains focus (files added in Finder…).
+  useEffect(() => {
+    const onFocus = () => {
+      if (projectRef.current) void refreshTree(projectRef.current.path);
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [refreshTree]);
 
-      try {
-        if (managerRef.current) {
-          lastAutoSnapshotRef.current = 0;
-          await recordSnapshot();
-          await managerRef.current.dispose();
-          managerRef.current = null;
-        }
-
-        const isMain = relPath === current.mainFile;
-        let content: string;
-        let isCollab = false;
-        let roomId: string | null = null;
-        let crdtState: number[] | null = null;
-
-        if (isMain) {
-          const data = await readProject(current.path, relPath);
-          content = data.tex_content;
-          isCollab = data.is_collab;
-          roomId = data.room_id;
-          crdtState = data.crdt_state;
-        } else {
-          content = await readProjectFile(current.path, relPath);
-        }
-
-        const manager = new CollabManager({
-          projectPath: current.path,
-          mainFile: relPath,
-          isCollab,
-          roomId,
-          initialTexContent: content,
-          initialCrdtState: crdtState,
-          currentUser: currentUserRef.current,
-          callbacks: {
-            onModeChange: setMode,
-            onHostChange: setIsHost,
-            onPeersChange: setPeers,
-            onStatusChange: (status, diag) => {
-              setConnectionStatus(status);
-              setDiagnostics(diag);
-            },
-            onRoomIdChange: setRoomId,
-            onSaveStateChange: setSaveState,
-          },
-        });
-        managerRef.current = manager;
-
-        const next = { ...current, activeFile: relPath };
-        projectRef.current = next;
-        setProject(next);
-
-        setSession({
-          key: `${current.path}::${relPath}::${Date.now()}`,
-          ytext: manager.ytext,
-          awareness: manager.awareness,
-        });
-        setMode(manager.mode);
-        setRoomId(manager.roomId);
-        setIsHost(manager.isHost);
-        setPeers(manager.peers);
-        setConnectionStatus(manager.status);
-        setDiagnostics(manager.diagnostics);
-        setSaveState(manager.saveState);
-        lastAutoSnapshotRef.current = Date.now();
-      } catch (err) {
-        console.error("Failed to switch file:", err);
-        setBanner({ kind: "error", text: t("files.error.load", { message: errorMessage(err) }) });
-      }
-    },
-    [recordSnapshot, t]
+  const tree = useMemo(
+    () => (mode === "collab" ? mergeSharedFiles(fileTree, sharedFiles) : fileTree),
+    [fileTree, sharedFiles, mode]
   );
+  const allFiles = useMemo(() => flattenFiles(tree), [tree]);
+  const knownFiles = useMemo(() => new Set(allFiles), [allFiles]);
 
-  const handleSetRootFile = useCallback((file: string) => {
+  /** Changes the compiled root; in a room every peer follows. */
+  const applyRootFile = useCallback(async (file: string, share: boolean) => {
     const current = projectRef.current;
-    if (!current || file === current.mainFile) return;
-    const next = { ...current, mainFile: file };
+    const manager = managerRef.current;
+    if (!current || !manager || file === current.rootFile) return;
+    const next = { ...current, rootFile: file };
     projectRef.current = next;
     setProject(next);
-  }, []);
+    rootDiskTextRef.current = manager.getFileText(file) ?? (await readProjectFile(current.path, file).catch(() => ""));
+    lastCompiledRef.current = null;
+    buildSettingsRef.current = { ...buildSettingsRef.current, scope: "full" };
+    setBuildSettings(buildSettingsRef.current);
+    setRecents(addRecent({ path: current.path, mainFile: file }));
+    if (share && manager.mode === "collab") manager.setRootFile(file);
+    if (autoCompileRef.current) void runCompile({ auto: true });
+  }, [runCompile]);
+
+  const handleSetRootFile = useCallback((file: string) => void applyRootFile(file, true), [applyRootFile]);
+
+  // A peer changed the room's root file.
+  useEffect(() => {
+    const wanted = roomInfo.rootFile;
+    if (mode === "collab" && wanted && project && wanted !== project.rootFile) void applyRootFile(wanted, false);
+  }, [roomInfo.rootFile, mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleCreateNode = useCallback(
     async (relPath: string, isDir: boolean) => {
@@ -771,36 +938,48 @@ function App() {
       try {
         await createProjectNode(current.path, relPath, isDir);
         await refreshTree(current.path);
-        if (!isDir && isEditableFile(relPath)) {
-          await handleSelectFile(relPath);
-        }
+        if (!isDir && (isEditableFile(relPath) || isPreviewableFile(relPath))) await openFileRef.current(relPath);
       } catch (err) {
         console.error("Failed to create file/folder:", err);
         setBanner({ kind: "error", text: t("files.error.create", { message: errorMessage(err) }) });
         throw err;
       }
     },
-    [refreshTree, handleSelectFile, t]
+    [refreshTree, t]
   );
 
   const handleRenameNode = useCallback(
-    async (oldRelPath: string, newRelPath: string) => {
+    async (oldPath: string, newPath: string) => {
       const current = projectRef.current;
-      if (!current) return;
+      const manager = managerRef.current;
+      if (!current || !manager) return;
+      // The room's legacy text is bound to the primary file's path.
+      if (isSameOrInside(oldPath, current.primaryFile) && manager.mode === "collab") {
+        setBanner({ kind: "error", text: t("files.error.primaryLocked") });
+        throw new Error("primary file");
+      }
       try {
-        await renameProjectNode(current.path, oldRelPath, newRelPath);
-        const wasActive = current.activeFile === oldRelPath;
-        const wasMain = current.mainFile === oldRelPath;
-        const next = {
-          ...current,
-          activeFile: wasActive ? newRelPath : current.activeFile,
-          mainFile: wasMain ? newRelPath : current.mainFile,
-        };
-        projectRef.current = next;
-        setProject(next);
+        await manager.flushSave();
+        await renameProjectNode(current.path, oldPath, newPath);
+        if (isSameOrInside(oldPath, current.primaryFile)) {
+          // Solo: reopen with the renamed root so the editor follows it.
+          await openProject(current.path, renamePath(current.rootFile, oldPath, newPath));
+          return;
+        }
+        for (const shared of manager.sharedFiles()) {
+          if (isSameOrInside(oldPath, shared)) manager.renameFile(shared, renamePath(shared, oldPath, newPath));
+        }
+        const nextTabs = tabsRef.current.map((p) => renamePath(p, oldPath, newPath));
+        tabsRef.current = nextTabs;
+        setTabs(nextTabs);
+        const wasActive = activeFileRef.current;
+        if (isSameOrInside(oldPath, current.rootFile)) {
+          await applyRootFile(renamePath(current.rootFile, oldPath, newPath), true);
+        }
         await refreshTree(current.path);
-        if (wasActive) {
-          await handleSelectFile(newRelPath);
+        if (wasActive && isSameOrInside(oldPath, wasActive)) {
+          setSession(null);
+          await openFileRef.current(renamePath(wasActive, oldPath, newPath));
         }
       } catch (err) {
         console.error("Failed to rename file/folder:", err);
@@ -808,26 +987,35 @@ function App() {
         throw err;
       }
     },
-    [refreshTree, handleSelectFile, t]
+    [applyRootFile, openProject, refreshTree, t]
   );
 
   const handleDeleteNode = useCallback(
     async (relPath: string) => {
       const current = projectRef.current;
-      if (!current) return;
+      const manager = managerRef.current;
+      if (!current || !manager) return;
+      if (isSameOrInside(relPath, current.primaryFile)) {
+        setBanner({ kind: "error", text: t("files.error.primaryDelete") });
+        throw new Error("primary file");
+      }
       try {
-        await deleteProjectNode(current.path, relPath);
-        await refreshTree(current.path);
-        if (current.activeFile === relPath) {
-          await handleSelectFile(current.mainFile);
+        for (const shared of manager.sharedFiles()) {
+          if (isSameOrInside(relPath, shared)) manager.removeFile(shared);
         }
+        await deleteProjectNode(current.path, relPath);
+        for (const tab of [...tabsRef.current]) {
+          if (isSameOrInside(relPath, tab)) closeTab(tab);
+        }
+        if (isSameOrInside(relPath, current.rootFile)) await applyRootFile(current.primaryFile, true);
+        await refreshTree(current.path);
       } catch (err) {
         console.error("Failed to delete file/folder:", err);
         setBanner({ kind: "error", text: t("files.error.delete", { message: errorMessage(err) }) });
         throw err;
       }
     },
-    [refreshTree, handleSelectFile, t]
+    [applyRootFile, closeTab, refreshTree, t]
   );
 
   const handleOpenFolder = useCallback(async () => {
@@ -869,9 +1057,6 @@ function App() {
     [openProject, t]
   );
 
-  const handleOpenFolderRef = useRef(handleOpenFolder);
-  handleOpenFolderRef.current = handleOpenFolder;
-
   // ─── UI zoom ────────────────────────────────────────────────────
   const setZoom = useCallback((updater: (z: number) => number) => {
     setUiZoom((z) => {
@@ -885,53 +1070,33 @@ function App() {
     });
   }, []);
 
-  // Global shortcuts: ⌘S build, ⌘O open, ⌥/⌘ +/−/0 UI zoom.
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const primary = e.metaKey || e.ctrlKey;
-      if (primary || e.altKey) {
-        // Match by physical key (US layout) and by produced character, so the
-        // shortcut works on Spanish/ISO layouts and with Option dead keys.
-        const zoomIn =
-          e.code === "Equal" ||
-          e.code === "NumpadAdd" ||
-          (e.altKey && e.code === "BracketRight") || // "+" key on ISO (Spanish) layouts
-          ["+", "=", "≠", "±"].includes(e.key);
-        const zoomOut = e.code === "Minus" || e.code === "NumpadSubtract" || ["-", "_", "–", "—"].includes(e.key);
-        const zoomReset = e.code === "Digit0" || e.code === "Numpad0" || e.key === "0";
-        if (zoomIn || zoomOut || zoomReset) {
-          e.preventDefault();
-          if (zoomReset) setZoom(() => 1);
-          else setZoom((z) => z + (zoomIn ? UI_ZOOM_STEP : -UI_ZOOM_STEP));
-          return;
+  // ─── Side panel ─────────────────────────────────────────────────
+  const togglePanel = useCallback(
+    (panel: PanelId) => {
+      setActivePanel((current) => {
+        const next = current === panel ? null : panel;
+        if (next === null || next === "files" || next === "outline" || next === "history") {
+          try {
+            localStorage.setItem(SIDEBAR_KEY, next ?? "none");
+          } catch {
+            // ignore
+          }
         }
-      }
-      if (!primary || e.shiftKey || e.altKey) return;
-      const key = e.key.toLowerCase();
-      if (key === "s") {
-        e.preventDefault();
-        void runCompile();
-      } else if (key === "o") {
-        e.preventDefault();
-        void handleOpenFolderRef.current();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [runCompile, setZoom]);
-
-  const handleSelectMainFile = useCallback(
-    async (file: string) => {
-      if (!project || file === project.mainFile) return;
-      try {
-        await openProject(project.path, file);
-      } catch (err) {
-        console.error("Failed to switch root file:", err);
-        setBanner({ kind: "error", text: t("error.openProject", { message: errorMessage(err) }) });
-      }
+        return next;
+      });
+      if (panel === "history" && projectRef.current) void refreshSnapshots(projectRef.current.path);
     },
-    [project, openProject, t]
+    [refreshSnapshots]
   );
+  const showPanel = useCallback(
+    (panel: PanelId) => {
+      setActivePanel(panel);
+      if (panel === "history" && projectRef.current) void refreshSnapshots(projectRef.current.path);
+    },
+    [refreshSnapshots]
+  );
+  const lastViewRef = useRef<PanelId>("files");
+  if (activePanel === "files" || activePanel === "outline" || activePanel === "history") lastViewRef.current = activePanel;
 
   // ─── Collaboration handlers ─────────────────────────────────────
   const handleStartCollab = useCallback(async () => {
@@ -943,12 +1108,18 @@ function App() {
       if (cur && cur.cloud.provider !== "local") {
         manager.setRoomInfo({ cloud: cur.cloud, hostName: currentUserRef.current.name });
       }
+      if (cur && cur.rootFile !== manager.primaryFile) manager.setRootFile(cur.rootFile);
       setActivePanel("room");
     } catch (err) {
       console.error("Failed to start collaboration:", err);
       setBanner({ kind: "error", text: t("error.collab", { message: errorMessage(err) }) });
     }
   }, [t]);
+
+  const handleShare = useCallback(() => {
+    if (managerRef.current?.mode === "collab") showPanel("room");
+    else void handleStartCollab();
+  }, [handleStartCollab, showPanel]);
 
   /**
    * Join by room ID without asking for a folder:
@@ -1044,7 +1215,7 @@ function App() {
   const handleInstallUpdate = useCallback(async () => {
     try {
       if (managerRef.current && projectRef.current) {
-        await historySave(projectRef.current.path, projectRef.current.mainFile, managerRef.current.getText(), null, currentUserRef.current.name).catch(() => undefined);
+        await historySave(projectRef.current.path, managerRef.current.primaryFile, managerRef.current.getText(), null, currentUserRef.current.name).catch(() => undefined);
         await managerRef.current.dispose();
         managerRef.current = null;
       }
@@ -1057,7 +1228,7 @@ function App() {
   const handleStopCollab = useCallback(async () => {
     try {
       await managerRef.current?.stopCollaboration();
-      setActivePanel(null);
+      setActivePanel(lastViewRef.current);
     } catch (err) {
       console.error("Failed to stop collaboration:", err);
     }
@@ -1091,25 +1262,80 @@ function App() {
         if (!result?.pdf_path) return; // errors are shown in the preview
         pdfPath = result.pdf_path;
       }
-      const stem = project.mainFile.split("/").pop()?.replace(/\.tex$/i, "") ?? "main";
+      const stem = project.rootFile.split("/").pop()?.replace(/\.tex$/i, "") ?? "main";
       await exportPdf(pdfPath, `${stem}.pdf`);
     } catch (err) {
       console.error("Failed to export PDF:", err);
       setBanner({ kind: "error", text: t("error.export", { message: errorMessage(err) }) });
     }
   }, [compile.pdfPath, compile.pdfPlain, project, runCompile, t]);
+  const handleExportRef = useRef(handleExport);
+  handleExportRef.current = handleExport;
+  const handleOpenFolderRef = useRef(handleOpenFolder);
+  handleOpenFolderRef.current = handleOpenFolder;
 
-  const handleJumpToLine = useCallback((line: number) => {
-    editorRef.current?.goToLine(line);
-  }, []);
-
-  const togglePanel = useCallback(
-    (panel: PanelId) => {
-      setActivePanel((current) => (current === panel ? null : panel));
-      if (panel === "history" && projectRef.current) void refreshSnapshots(projectRef.current.path);
-    },
-    [refreshSnapshots]
-  );
+  // ─── Global shortcuts ───────────────────────────────────────────
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const action = matchShortcut(e, MAC);
+      if (!action) return;
+      const hasProject = projectRef.current !== null;
+      switch (action) {
+        case "zoomIn":
+          setZoom((z) => z + UI_ZOOM_STEP);
+          break;
+        case "zoomOut":
+          setZoom((z) => z - UI_ZOOM_STEP);
+          break;
+        case "zoomReset":
+          setZoom(() => 1);
+          break;
+        case "build":
+          void runCompile();
+          break;
+        case "open":
+          void handleOpenFolderRef.current();
+          break;
+        case "export":
+          if (!hasProject) return;
+          void handleExportRef.current();
+          break;
+        case "quickOpen":
+          if (!hasProject) return;
+          setQuickOpen("files");
+          break;
+        case "gotoSymbol":
+          if (!hasProject) return;
+          setQuickOpen("symbols");
+          break;
+        case "gotoLine":
+          if (!hasProject) return;
+          setQuickOpen("line");
+          break;
+        case "toggleSidebar":
+          setActivePanel((p) => (p ? null : hasProject ? lastViewRef.current : null));
+          break;
+        case "viewFiles":
+          if (hasProject) showPanel("files");
+          break;
+        case "viewOutline":
+          if (hasProject) showPanel("outline");
+          break;
+        case "viewHistory":
+          if (hasProject) showPanel("history");
+          break;
+        case "nextTab":
+          cycleTab(1);
+          break;
+        case "prevTab":
+          cycleTab(-1);
+          break;
+      }
+      e.preventDefault();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [runCompile, setZoom, showPanel, cycleTab]);
 
   // ─── Window lifecycle: snapshot + flush before close, cleanup on unmount ──
   useEffect(() => {
@@ -1122,7 +1348,7 @@ function App() {
         if (managerRef.current && projectRef.current) {
           await historySave(
             projectRef.current.path,
-            projectRef.current.mainFile,
+            managerRef.current.primaryFile,
             managerRef.current.getText(),
             null,
             currentUserRef.current.name
@@ -1178,10 +1404,61 @@ function App() {
     []
   );
 
+  const resolveFile = useCallback(
+    (d: LatexDiagnostic) => (project ? resolveDiagnosticFile(d.file, project.rootFile, allFiles) : null),
+    [project, allFiles]
+  );
+  const errorCount = compile.diagnostics.filter((d) => d.severity === "error").length;
+  const warningCount = compile.diagnostics.length - errorCount;
+
   // ─── Panels ─────────────────────────────────────────────────────
   let panelTitle = "";
   let panelContent: React.ReactNode = null;
-  if (activePanel === "room" && mode === "collab" && roomId) {
+  let panelActions: React.ReactNode = null;
+  const headerButton = "p-1.5 rounded text-mk-fg3 hover:text-mk-fg hover:bg-mk-bg3 cursor-pointer";
+  if (activePanel === "files" && project) {
+    panelTitle = t("files.title");
+    panelActions = (
+      <>
+        <button className={headerButton} title={t("files.newFile")} onClick={() => setCreateRequest((r) => ({ isDir: false, seq: (r?.seq ?? 0) + 1 }))}>
+          <FilePlus size={14} />
+        </button>
+        <button className={headerButton} title={t("files.newFolder")} onClick={() => setCreateRequest((r) => ({ isDir: true, seq: (r?.seq ?? 0) + 1 }))}>
+          <FolderPlus size={14} />
+        </button>
+        <button className={headerButton} title={t("files.refresh")} onClick={() => void refreshTree(project.path)}>
+          <RefreshCw size={13} />
+        </button>
+      </>
+    );
+    panelContent = (
+      <FileTree
+        nodes={tree}
+        activeFile={activeFile}
+        rootFile={project.rootFile}
+        openFiles={tabs}
+        peers={peers}
+        onSelectFile={(path) => void openFile(path)}
+        onSetRootFile={handleSetRootFile}
+        onCreateNode={handleCreateNode}
+        onRenameNode={handleRenameNode}
+        onDeleteNode={handleDeleteNode}
+        createRequest={createRequest}
+      />
+    );
+  } else if (activePanel === "outline" && project) {
+    panelTitle = activeFile ? t("outline.titleOf", { file: activeFile.split("/").pop() ?? activeFile }) : t("outline.title");
+    panelContent = (
+      <OutlinePanel
+        file={session?.path ?? null}
+        items={outline}
+        cursorLine={cursorLine}
+        knownFiles={knownFiles}
+        onGoToLine={(line) => goTo(null, line)}
+        onOpenFile={(path) => void openFile(path)}
+      />
+    );
+  } else if (activePanel === "room" && mode === "collab" && roomId) {
     panelTitle = t("collab.title");
     panelContent = (
       <CollabPanel
@@ -1204,7 +1481,7 @@ function App() {
     panelTitle = t("new.title");
     panelContent = <NewProjectPanel defaultParent={defaultParent} onPickParent={pickParentFolder} onCreate={handleCreateProject} />;
   } else if (activePanel === "history" && project) {
-    panelTitle = t("history.title");
+    panelTitle = t("history.titleOf", { file: project.primaryFile });
     panelContent = (
       <HistoryPanel
         snapshots={snapshots}
@@ -1232,183 +1509,253 @@ function App() {
   const buildTitle = t("rail.build.mode", { mode: `${scopeLabel}${buildSettings.draft ? t("rail.build.draftSuffix") : ""}` });
   const canExport = Boolean(compile.pdfPath) && !isCompiling;
 
+  // ─── Editor area ────────────────────────────────────────────────
+  let editorArea: React.ReactNode;
+  if (project && activeFile && isPreviewableFile(activeFile)) {
+    editorArea = <AssetPreview projectPath={project.path} path={activeFile} />;
+  } else if (session && session.path === activeFile) {
+    editorArea = (
+      <LatexEditor
+        key={session.key}
+        ref={editorRef}
+        ytext={session.ytext}
+        awareness={session.awareness}
+        undoManager={session.undoManager}
+        initialAnchor={anchorsRef.current.get(session.path)}
+        onCursorLine={setCursorLine}
+        onLeave={(anchor) => anchorsRef.current.set(session.path, anchor)}
+      />
+    );
+  } else if (opening) {
+    editorArea = (
+      <div className="h-full flex items-center justify-center gap-2 text-xs text-mk-fg3">
+        <Loader2 size={14} className="animate-spin" /> {t("files.opening", { name: opening })}
+      </div>
+    );
+  } else {
+    editorArea = (
+      <div className="h-full flex flex-col items-center justify-center gap-2 text-xs text-mk-fg4 select-none">
+        <span>{t("tabs.empty")}</span>
+        <span className="font-mono">
+          {shortcutLabel("quickOpen", MAC)} · {t("quick.title")}
+        </span>
+      </div>
+    );
+  }
+
   // ─── Render ─────────────────────────────────────────────────────
   const zoomed = Math.abs(uiZoom - 1) > 0.001;
   return (
     <div
-      className="flex bg-mk-bg text-mk-fg overflow-hidden"
+      className="flex flex-col bg-mk-bg text-mk-fg overflow-hidden"
       style={
         zoomed
           ? { width: `${100 / uiZoom}vw`, height: `${100 / uiZoom}vh`, transform: `scale(${uiZoom})`, transformOrigin: "0 0" }
           : { width: "100vw", height: "100vh" }
       }
     >
-      <Sidebar
-        hasProject={project !== null}
+      <TopBar
+        mac={MAC}
+        projectPath={project?.path ?? null}
+        cloud={project?.cloud ?? null}
+        rootFile={project?.rootFile ?? null}
+        recents={recents}
         mode={mode}
         isHost={isHost}
         peerCount={peers.length}
         connectionStatus={connectionStatus}
         isCompiling={isCompiling}
         autoCompile={autoCompile}
+        compilerName={compilerInfo?.name ?? null}
+        chapters={chapters}
+        buildSettings={buildSettings}
         buildTitle={buildTitle}
         canExport={canExport}
-        currentUser={currentUser}
-        activePanel={effectivePanel}
-        showFileTree={showFileTree}
-        onToggleFileTree={handleToggleFileTree}
-        onOpenFolder={handleOpenFolder}
-        onTogglePanel={togglePanel}
-        onStartCollab={handleStartCollab}
-        onCompile={() => void runCompile()}
+        onChangeScope={handleChangeScope}
+        onToggleDraft={handleToggleDraft}
+        onTogglePreamble={handleTogglePreamble}
+        onCompile={handleCompile}
         onToggleAuto={toggleAutoCompile}
-        onExport={handleExport}
-        panel={panelContent}
-        panelTitle={panelTitle}
-        onClosePanel={() => setActivePanel(null)}
+        onExport={() => void handleExport()}
+        onShare={handleShare}
+        onOpenRoot={() => project && void openFile(project.rootFile)}
+        onQuickOpen={() => setQuickOpen("files")}
+        onNewProject={() => showPanel("new")}
+        onOpenFolder={() => void handleOpenFolder()}
+        onJoin={() => showPanel("join")}
+        onOpenRecent={(r) => void handleOpenRecent(r)}
+        onNewWindow={() => void handleNewWindow()}
       />
 
-      {/* File Tree panel when a project is open and visible */}
-      {project && session && showFileTree && (
-        <FileTree
-          nodes={fileTree}
-          activeFile={project.activeFile}
-          rootFile={project.mainFile}
-          onSelectFile={(path) => void handleSelectFile(path)}
-          onSetRootFile={handleSetRootFile}
-          onCreateNode={handleCreateNode}
-          onRenameNode={handleRenameNode}
-          onDeleteNode={handleDeleteNode}
-          onToggleCollapse={handleToggleFileTree}
-        />
-      )}
-
-      <div className="flex-1 min-w-0 flex flex-col">
-        <TopBar
-          projectPath={project?.path ?? null}
-          cloud={project?.cloud ?? null}
-          mainFile={project?.activeFile ?? project?.mainFile ?? null}
-          texFiles={project?.texFiles ?? []}
+      <div className="flex-1 min-h-0 flex">
+        <Sidebar
+          mac={MAC}
+          hasProject={project !== null}
           mode={mode}
           isHost={isHost}
-          peers={peers}
+          peerCount={peers.length}
           connectionStatus={connectionStatus}
-          saveState={saveState}
-          compilerInfo={compilerInfo}
-          compilerHint={compilerHint}
-          summary={compile.summary}
-          pageCount={pageCount}
-          autoCompile={autoCompile}
-          isCompiling={isCompiling}
-          chapters={chapters}
-          buildSettings={buildSettings}
-          onChangeScope={handleChangeScope}
-          onToggleDraft={handleToggleDraft}
-          onTogglePreamble={handleTogglePreamble}
-          uiZoom={uiZoom}
-          onResetZoom={() => setZoom(() => 1)}
-          onSelectMainFile={(f) => void handleSelectFile(f)}
+          currentUser={currentUser}
+          activePanel={effectivePanel}
+          onTogglePanel={togglePanel}
+          panel={panelContent}
+          panelTitle={panelTitle}
+          panelActions={panelActions}
+          onClosePanel={() => setActivePanel(null)}
         />
 
-        {banner && (
-          <div
-            className={`flex items-center justify-between px-4 py-1.5 text-xs text-mk-fg shrink-0 border-b ${
-              banner.kind === "error" ? "bg-mk-red/15 border-mk-red/40" : "bg-mk-green/15 border-mk-green/40"
-            }`}
-          >
-            <span className="truncate">{banner.text}</span>
-            <button onClick={() => setBanner(null)} className="ml-3 text-mk-fg3 hover:text-mk-fg cursor-pointer">
-              {t("action.close")}
-            </button>
-          </div>
-        )}
-
-        <UpdateBanner
-          state={updateState}
-          onInstall={() => void handleInstallUpdate()}
-          onRetry={() => void checkAndStageUpdate({ onState: setUpdateState })}
-          onDismiss={() => setUpdateState({ status: "idle" })}
-        />
-
-        {(cloudAssist.kind === "install" || cloudAssist.kind === "locate") && assistDismissedFor !== roomId && roomCloud && (
-          <div className="flex items-center gap-3 px-4 py-1.5 text-xs text-mk-fg shrink-0 border-b bg-mk-blue/10 border-mk-blue/40">
-            <Cloud size={13} className="shrink-0 text-mk-blue" />
-            <span className="truncate">
-              {cloudAssist.kind === "install"
-                ? t("cloud.assist.install", { provider: cloudLabel(roomCloud, t) })
-                : t("cloud.assist.locate", { provider: cloudLabel(roomCloud, t) })}
-            </span>
-            <span className="flex-1" />
-            {cloudAssist.kind === "install" && compilerInfo && providerDownloadUrl(roomCloud.provider, compilerInfo.os) && (
-              <button
-                onClick={() => void openExternalUrl(providerDownloadUrl(roomCloud.provider, compilerInfo.os) as string)}
-                className="flex items-center gap-1 px-2 py-1 bg-mk-blue text-mk-bg2 font-semibold hover:bg-mk-yellow cursor-pointer"
-              >
-                <Download size={12} /> {t("cloud.assist.download", { provider: t(`cloud.provider.${roomCloud.provider}` as MessageKey) })}
-              </button>
-            )}
-            <button
-              onClick={() => void tryLocateRoomFolder()}
-              className="flex items-center gap-1 text-mk-fg2 hover:text-mk-fg cursor-pointer"
-              title={t("cloud.assist.retry")}
+        <div className="flex-1 min-w-0 flex flex-col">
+          {banner && (
+            <div
+              className={`flex items-center justify-between px-4 py-1.5 text-xs text-mk-fg shrink-0 border-b ${
+                banner.kind === "error" ? "bg-mk-red/15 border-mk-red/40" : "bg-mk-green/15 border-mk-green/40"
+              }`}
             >
-              <RefreshCw size={12} /> {t("cloud.assist.retry")}
-            </button>
-            <button onClick={() => setAssistDismissedFor(roomId)} className="text-mk-fg4 hover:text-mk-fg cursor-pointer" title={t("cloud.assist.dismiss")}>
-              ×
-            </button>
-          </div>
-        )}
+              <span className="truncate">{banner.text}</span>
+              <button onClick={() => setBanner(null)} className="ml-3 text-mk-fg3 hover:text-mk-fg cursor-pointer">
+                {t("action.close")}
+              </button>
+            </div>
+          )}
 
-        {session ? (
-          <SplitPane
-            left={<LatexEditor key={session.key} ref={editorRef} ytext={session.ytext} awareness={session.awareness} />}
-            right={
-              selectedSnapshot ? (
-                <DiffView
-                  snapshot={selectedSnapshot}
-                  snapshotText={snapshotText}
-                  currentText={currentText}
-                  onRestore={() => void handleRestoreSnapshot(selectedSnapshot)}
-                  onClose={() => void handleSelectSnapshot(null)}
-                />
-              ) : (
-                <PdfPreview
-                  pdfData={compile.pdfData}
-                  pdfVersion={compile.pdfVersion}
-                  logs={compile.logs}
-                  diagnostics={compile.diagnostics}
-                  summary={compile.summary}
-                  fatalError={compile.fatalError}
-                  notice={assetNotice}
-                  isCompiling={isCompiling}
-                  quietCompile={compileQuiet}
-                  canExport={canExport}
-                  hasProject={project !== null}
-                  onCompile={handleCompile}
-                  mainFile={project?.activeFile ?? project?.mainFile ?? null}
-                  onJumpToLine={handleJumpToLine}
-                  onExport={handleExport}
-                  onPageCount={setPageCount}
-                />
-              )
-            }
+          <UpdateBanner
+            state={updateState}
+            onInstall={() => void handleInstallUpdate()}
+            onRetry={() => void checkAndStageUpdate({ onState: setUpdateState })}
+            onDismiss={() => setUpdateState({ status: "idle" })}
           />
-        ) : (
-          <div className="flex-1 min-h-0">
-            <Welcome
-              recents={recents}
-              compilerMissing={compilerInfo !== null && compilerInfo.name === null}
-              compilerHint={compilerHint}
-              onOpenFolder={handleOpenFolder}
-              onNew={() => setActivePanel("new")}
-              onJoin={() => setActivePanel("join")}
-              onOpenRecent={handleOpenRecent}
-              onRemoveRecent={(path) => setRecents(removeRecent(path))}
+
+          {(cloudAssist.kind === "install" || cloudAssist.kind === "locate") && assistDismissedFor !== roomId && roomCloud && (
+            <div className="flex items-center gap-3 px-4 py-1.5 text-xs text-mk-fg shrink-0 border-b bg-mk-blue/10 border-mk-blue/40">
+              <Cloud size={13} className="shrink-0 text-mk-blue" />
+              <span className="truncate">
+                {cloudAssist.kind === "install"
+                  ? t("cloud.assist.install", { provider: cloudLabel(roomCloud, t) })
+                  : t("cloud.assist.locate", { provider: cloudLabel(roomCloud, t) })}
+              </span>
+              <span className="flex-1" />
+              {cloudAssist.kind === "install" && compilerInfo && providerDownloadUrl(roomCloud.provider, compilerInfo.os) && (
+                <button
+                  onClick={() => void openExternalUrl(providerDownloadUrl(roomCloud.provider, compilerInfo.os) as string)}
+                  className="flex items-center gap-1 px-2 py-1 bg-mk-blue text-mk-bg2 font-semibold hover:bg-mk-yellow cursor-pointer"
+                >
+                  <Download size={12} /> {t("cloud.assist.download", { provider: t(`cloud.provider.${roomCloud.provider}` as MessageKey) })}
+                </button>
+              )}
+              <button
+                onClick={() => void tryLocateRoomFolder()}
+                className="flex items-center gap-1 text-mk-fg2 hover:text-mk-fg cursor-pointer"
+                title={t("cloud.assist.retry")}
+              >
+                <RefreshCw size={12} /> {t("cloud.assist.retry")}
+              </button>
+              <button onClick={() => setAssistDismissedFor(roomId)} className="text-mk-fg4 hover:text-mk-fg cursor-pointer" title={t("cloud.assist.dismiss")}>
+                ×
+              </button>
+            </div>
+          )}
+
+          {project ? (
+            <SplitPane
+              left={
+                <div className="h-full flex flex-col">
+                  <EditorTabs
+                    tabs={tabs}
+                    active={activeFile}
+                    rootFile={project.rootFile}
+                    peers={peers}
+                    onSelect={(path) => void openFile(path)}
+                    onClose={closeTab}
+                  />
+                  <div className="flex-1 min-h-0">{editorArea}</div>
+                </div>
+              }
+              right={
+                selectedSnapshot ? (
+                  <DiffView
+                    snapshot={selectedSnapshot}
+                    snapshotText={snapshotText}
+                    currentText={currentText}
+                    onRestore={() => void handleRestoreSnapshot(selectedSnapshot)}
+                    onClose={() => void handleSelectSnapshot(null)}
+                  />
+                ) : (
+                  <PdfPreview
+                    pdfData={compile.pdfData}
+                    pdfVersion={compile.pdfVersion}
+                    logs={compile.logs}
+                    diagnostics={compile.diagnostics}
+                    summary={compile.summary}
+                    fatalError={compile.fatalError}
+                    notice={assetNotice}
+                    isCompiling={isCompiling}
+                    quietCompile={compileQuiet}
+                    canExport={canExport}
+                    hasProject={project !== null}
+                    onCompile={handleCompile}
+                    resolveFile={resolveFile}
+                    onJump={(file, line) => goTo(file, line)}
+                    problemsRequest={problemsRequest}
+                    onExport={() => void handleExport()}
+                    onPageCount={setPageCount}
+                  />
+                )
+              }
             />
-          </div>
-        )}
+          ) : (
+            <div className="flex-1 min-h-0">
+              <Welcome
+                recents={recents}
+                compilerMissing={compilerInfo !== null && compilerInfo.name === null}
+                compilerHint={compilerHint}
+                onOpenFolder={handleOpenFolder}
+                onNew={() => setActivePanel("new")}
+                onJoin={() => setActivePanel("join")}
+                onOpenRecent={handleOpenRecent}
+                onRemoveRecent={(path) => setRecents(removeRecent(path))}
+              />
+            </div>
+          )}
+        </div>
       </div>
+
+      <StatusBar
+        hasProject={project !== null}
+        mode={mode}
+        isHost={isHost}
+        peers={peers}
+        connectionStatus={connectionStatus}
+        saveState={saveState}
+        cursorLine={session && session.path === activeFile ? cursorLine : null}
+        compilerInfo={compilerInfo}
+        compilerHint={compilerHint}
+        autoCompile={autoCompile}
+        isCompiling={isCompiling}
+        summary={compile.summary}
+        pageCount={pageCount}
+        errorCount={errorCount}
+        warningCount={warningCount}
+        uiZoom={uiZoom}
+        onResetZoom={() => setZoom(() => 1)}
+        onOpenRoom={() => mode === "collab" && showPanel("room")}
+        onToggleAuto={toggleAutoCompile}
+        onShowProblems={() => setProblemsRequest((n) => n + 1)}
+      />
+
+      {quickOpen && project && (
+        <QuickOpen
+          initialMode={quickOpen}
+          files={allFiles}
+          recent={recentFilesRef.current}
+          outline={outline}
+          onOpenFile={(path) => void openFile(path)}
+          onGoToLine={(line) => goTo(null, line)}
+          onClose={() => {
+            setQuickOpen(null);
+            setTimeout(() => editorRef.current?.focus(), 0);
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -17,6 +17,8 @@ export interface ProjectData {
   tex_content: string;
   is_collab: boolean;
   room_id: string | null;
+  /** Root file recorded in room.json: the file the room's legacy shared text belongs to. */
+  room_main_file?: string | null;
   crdt_state: number[] | null; // Vec<u8> arrives as number[]
   /** Desktop sync client that keeps the folder in the cloud, detected from its path. */
   cloud: CloudLocation;
@@ -211,6 +213,12 @@ export async function readProjectFile(projectPath: string, relPath: string): Pro
   return invoke<string>("read_project_file", { projectPath, relPath });
 }
 
+/** Raw bytes of a project file (image and PDF previews), via binary IPC. */
+export async function readProjectFileBytes(projectPath: string, relPath: string): Promise<Uint8Array> {
+  const buffer = await invoke<ArrayBuffer>("read_project_file_bytes", { projectPath, relPath });
+  return new Uint8Array(buffer);
+}
+
 /** Saves any file inside a project atomically. */
 export async function saveProjectFile(
   projectPath: string,
@@ -307,7 +315,8 @@ export async function detectCompiler(): Promise<CompilerInfo> {
 /**
  * Compiles in the per-project build cache. LaTeX errors come back as `success: false`.
  * With a `roomId`, files received from peers (the room's asset cache) fill in what
- * the project folder lacks.
+ * the project folder lacks. `openFiles` (path → text) is the editor's content of
+ * other project files; it replaces their disk copies for this build.
  */
 export async function compileLatex(
   projectPath: string,
@@ -315,10 +324,12 @@ export async function compileLatex(
   texContent: string,
   options: BuildOptions = {},
   timeoutSecs?: number,
-  roomId?: string | null
+  roomId?: string | null,
+  openFiles?: Record<string, string>
 ): Promise<CompileOutput> {
   return invoke<CompileOutput>("compile_latex", {
     roomId: roomId ?? null,
+    openFiles: openFiles ?? null,
     projectPath,
     mainFile,
     texContent,

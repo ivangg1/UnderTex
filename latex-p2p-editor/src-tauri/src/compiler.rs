@@ -511,6 +511,40 @@ pub fn sync_assets(src: &Path, dst: &Path, exclude_main: &Path, overlay: Option<
     Ok(stats)
 }
 
+/// Writes the in-memory text of open project files (the editor's content,
+/// possibly not saved yet, or shared by peers) over their copies in the build
+/// directory. Identical content is not rewritten, so the engine's caches stay
+/// warm. Overridden entries are invalidated in the asset manifest: the next
+/// [`sync_assets`] copies the project's version back unless the file is
+/// overridden again, and removes it when the project folder has no such file.
+/// `main_rel` (written separately, with the build-mode rewrites) is skipped, as
+/// is any path escaping the build directory. Returns the number of files written.
+pub fn apply_file_overrides(dst: &Path, main_rel: &Path, overrides: &BTreeMap<String, String>) -> io::Result<usize> {
+    if overrides.is_empty() {
+        return Ok(0);
+    }
+    let manifest_path = dst.join(MANIFEST_FILE);
+    let mut manifest: Manifest = fs::read_to_string(&manifest_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    let mut written = 0;
+    for (rel, content) in overrides {
+        let Ok(target) = resolve_inside(dst, rel) else { continue };
+        if Path::new(rel) == main_rel || target == dst.join(main_rel) {
+            continue;
+        }
+        if crate::fsutil::write_atomic(&target, content.as_bytes())? {
+            written += 1;
+        }
+        let key = rel.trim_start_matches("./").to_string();
+        manifest.insert(key, AssetRecord { len: u64::MAX, mtime_ms: 0, cached: false });
+    }
+    let json = serde_json::to_string(&manifest).map_err(io::Error::other)?;
+    fs::write(&manifest_path, json)?;
+    Ok(written)
+}
+
 // ─── Build options & root-file rewriting ────────────────────────────
 //
 // Every rewrite below keeps the line numbers of the original file: the engine's
@@ -859,12 +893,15 @@ pub fn compile(
     options: &BuildOptions,
     timeout: Duration,
 ) -> Result<CompileOutput, String> {
-    compile_with_assets(project_path, main_file, tex_content, options, timeout, None)
+    compile_with_assets(project_path, main_file, tex_content, options, timeout, None, &BTreeMap::new())
 }
 
 /// Compiles `tex_content` as `main_file` of the project at `project_path`.
 /// `asset_cache` is the room's cache of files received from peers; it is merged
 /// into the build directory underneath the project's own files.
+///
+/// `open_files` holds the in-memory text of other project files (path relative
+/// to the project → content); it replaces their copies on disk for this build.
 ///
 /// Returns `Err` only for infrastructure problems (no engine installed, I/O errors).
 /// LaTeX errors are reported through `CompileOutput { success: false, logs, .. }`.
@@ -875,6 +912,7 @@ pub fn compile_with_assets(
     options: &BuildOptions,
     timeout: Duration,
     asset_cache: Option<&Path>,
+    open_files: &BTreeMap<String, String>,
 ) -> Result<CompileOutput, String> {
     let (engine, exe) = find_engine().ok_or_else(install_hint)?;
 
@@ -899,6 +937,8 @@ pub fn compile_with_assets(
     let started = Instant::now();
     let stats = sync_assets(&project_dir, &build_dir, &project_main, asset_cache)
         .map_err(|e| format!("Failed to sync project assets into build cache: {e}"))?;
+    let from_editor = apply_file_overrides(&build_dir, &main_rel, open_files)
+        .map_err(|e| format!("Failed to write open files into build cache: {e}"))?;
     fs::create_dir_all(&main_dir).map_err(|e| format!("Failed to create build directory: {e}"))?;
 
     // ── Build copy of the root file (the project file itself is never touched) ──
@@ -1006,7 +1046,7 @@ pub fn compile_with_assets(
     let duration_ms = started.elapsed().as_millis() as u64;
     let mode = if chapter.is_some() { "chapter" } else { "full" };
     let mut logs = format!(
-        "Compiler: {} ({})\nStatus: {}{}\nBuild cache: {}\nAssets: {} copied, {} unchanged, {} removed, {} from peers\nMode: {}{}\nDraft: {}\nPreamble: {}\nPasses: {}\nDuration: {} ms\n",
+        "Compiler: {} ({})\nStatus: {}{}\nBuild cache: {}\nAssets: {} copied, {} unchanged, {} removed, {} from peers, {} from the editor\nMode: {}{}\nDraft: {}\nPreamble: {}\nPasses: {}\nDuration: {} ms\n",
         engine.binary(),
         exe.display(),
         last.status,
@@ -1016,6 +1056,7 @@ pub fn compile_with_assets(
         stats.unchanged,
         stats.removed,
         stats.from_cache,
+        from_editor,
         mode,
         chapter.as_deref().map(|c| format!(" ({c})")).unwrap_or_default(),
         if draft { "on" } else { "off" },
@@ -1168,6 +1209,67 @@ mod tests {
 
         let _ = fs::remove_dir_all(&src);
         let _ = fs::remove_dir_all(&dst);
+    }
+
+    #[test]
+    fn open_file_overrides_replace_disk_copies_for_one_build_only() {
+        let src = temp_dir("override_src");
+        let dst = temp_dir("override_dst");
+        fs::create_dir_all(src.join("chapters")).unwrap();
+        fs::write(src.join("chapters/intro.tex"), b"disk intro").unwrap();
+        fs::write(src.join("main.tex"), b"root").unwrap();
+        let main_rel = Path::new("main.tex");
+        sync_assets(&src, &dst, &src.join("main.tex"), None).unwrap();
+
+        let mut open = BTreeMap::new();
+        open.insert("chapters/intro.tex".to_string(), "edited intro".to_string());
+        open.insert("chapters/new.tex".to_string(), "only in the editor".to_string());
+        open.insert("main.tex".to_string(), "never written here".to_string());
+        open.insert("../escape.tex".to_string(), "x".to_string());
+        assert_eq!(apply_file_overrides(&dst, main_rel, &open).unwrap(), 2);
+        assert_eq!(fs::read_to_string(dst.join("chapters/intro.tex")).unwrap(), "edited intro");
+        assert_eq!(fs::read_to_string(dst.join("chapters/new.tex")).unwrap(), "only in the editor");
+        assert!(!dst.join("main.tex").exists(), "the root file is written by the build itself");
+        assert!(!dst.parent().unwrap().join("escape.tex").exists());
+        // Same content again: nothing rewritten.
+        assert_eq!(apply_file_overrides(&dst, main_rel, &open).unwrap(), 0);
+
+        // Next build without overrides: the disk version comes back, the editor-only file goes.
+        let stats = sync_assets(&src, &dst, &src.join("main.tex"), None).unwrap();
+        assert_eq!(stats.copied, 1);
+        assert_eq!(stats.removed, 1);
+        assert_eq!(fs::read_to_string(dst.join("chapters/intro.tex")).unwrap(), "disk intro");
+        assert!(!dst.join("chapters/new.tex").exists());
+        let again = sync_assets(&src, &dst, &src.join("main.tex"), None).unwrap();
+        assert_eq!(again.copied, 0, "back to incremental once restored");
+
+        let _ = fs::remove_dir_all(&src);
+        let _ = fs::remove_dir_all(&dst);
+    }
+
+    #[test]
+    fn compile_uses_the_editor_content_of_included_files() {
+        if !engine_available() {
+            return;
+        }
+        let dir = temp_dir("compile_open_files");
+        fs::create_dir_all(dir.join("chapters")).unwrap();
+        // On disk the chapter is broken; the editor already holds the fix.
+        fs::write(dir.join("chapters/intro.tex"), "\\undefinedMacroOnDiskOnly").unwrap();
+        let tex = "\\documentclass{article}\n\\begin{document}\n\\input{chapters/intro}\n\\end{document}";
+        let project = dir.to_str().unwrap();
+        let broken = compile(project, "main.tex", tex, &BuildOptions::default(), DEFAULT_TIMEOUT).unwrap();
+        assert!(!broken.success, "disk version must fail");
+
+        let mut open = BTreeMap::new();
+        open.insert("chapters/intro.tex".to_string(), "Fixed in the editor.".to_string());
+        let fixed = compile_with_assets(project, "main.tex", tex, &BuildOptions::default(), DEFAULT_TIMEOUT, None, &open).unwrap();
+        assert!(fixed.success, "logs: {}", fixed.logs);
+        assert!(fixed.logs.contains("1 from the editor"));
+        assert_eq!(fs::read_to_string(dir.join("chapters/intro.tex")).unwrap(), "\\undefinedMacroOnDiskOnly", "project untouched");
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(build_dir_for(project));
     }
 
     #[test]
@@ -1553,7 +1655,7 @@ mod tests {
 
         fs::create_dir_all(cache.join("chapters")).unwrap();
         fs::write(cache.join("chapters/shared.tex"), "Text that only the host had.\n").unwrap();
-        let out = compile_with_assets(project.to_str().unwrap(), "main.tex", tex, &BuildOptions::default(), DEFAULT_TIMEOUT, Some(&cache)).unwrap();
+        let out = compile_with_assets(project.to_str().unwrap(), "main.tex", tex, &BuildOptions::default(), DEFAULT_TIMEOUT, Some(&cache), &BTreeMap::new()).unwrap();
         assert!(out.success, "{}", out.logs);
         assert!(out.logs.contains("1 from peers"), "{}", out.logs);
         assert!(!project.join("chapters").exists(), "the project folder must stay untouched");
