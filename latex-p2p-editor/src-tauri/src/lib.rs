@@ -25,7 +25,7 @@ use assets::{AssetCache, AssetEntry};
 use cloud::CloudClient;
 use compiler::{BuildOptions, CompileOutput, CompilerInfo};
 use history::{HistoryStore, SaveOutcome, SnapshotMeta};
-use project::{ProjectData, ProjectFile, RoomMeta};
+use project::{ProjectData, ProjectFile, ProjectNode, RoomMeta};
 
 /// Event sent to a window when the user asks to close it. The frontend flushes
 /// pending saves and then calls `close_window`.
@@ -187,6 +187,42 @@ fn save_project_state(
     let wrote_tex = project::save_tex(&project_path, &main_file, &tex_content)?;
     let wrote_crdt = project::save_crdt(&project_path, &crdt_binary)?;
     Ok(wrote_tex || wrote_crdt)
+}
+
+/// Lists the file tree of the project.
+#[tauri::command]
+fn list_project_files(project_path: String) -> Result<Vec<ProjectNode>, String> {
+    project::list_project_files(&project_path)
+}
+
+/// Safely read any text file inside the project.
+#[tauri::command]
+fn read_project_file(project_path: String, rel_path: String) -> Result<String, String> {
+    project::read_project_file(&project_path, &rel_path)
+}
+
+/// Safely save any file inside the project atomically.
+#[tauri::command]
+fn save_project_file(project_path: String, rel_path: String, content: String) -> Result<bool, String> {
+    project::save_project_file(&project_path, &rel_path, &content)
+}
+
+/// Create a new file or directory inside the project.
+#[tauri::command]
+fn create_project_node(project_path: String, rel_path: String, is_dir: bool) -> Result<(), String> {
+    project::create_project_node(&project_path, &rel_path, is_dir)
+}
+
+/// Delete a file or directory inside the project.
+#[tauri::command]
+fn delete_project_node(project_path: String, rel_path: String) -> Result<(), String> {
+    project::delete_project_node(&project_path, &rel_path)
+}
+
+/// Rename a file or directory inside the project.
+#[tauri::command]
+fn rename_project_node(project_path: String, old_rel_path: String, new_rel_path: String) -> Result<(), String> {
+    project::rename_project_node(&project_path, &old_rel_path, &new_rel_path)
 }
 
 /// Reports which LaTeX engine is available (and how to install one if none is).
@@ -395,6 +431,12 @@ pub fn run() {
             locate_room_in_cloud,
             room_workspaces_dir,
             ensure_room_workspace,
+            list_project_files,
+            read_project_file,
+            save_project_file,
+            create_project_node,
+            delete_project_node,
+            rename_project_node,
             history_list,
             history_save,
             history_read,

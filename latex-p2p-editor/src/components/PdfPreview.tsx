@@ -20,6 +20,7 @@ import {
   FileText,
   Loader2,
   Maximize2,
+  Play,
   Terminal,
   ZoomIn,
   ZoomOut,
@@ -58,6 +59,8 @@ interface PdfPreviewProps {
   /** Hide the "compiling" overlay (automatic background builds). */
   quietCompile?: boolean;
   canExport: boolean;
+  hasProject?: boolean;
+  onCompile?: () => void;
   mainFile: string | null;
   onJumpToLine: (line: number) => void;
   onExport: () => void;
@@ -86,6 +89,8 @@ export default function PdfPreview({
   isCompiling,
   quietCompile = false,
   canExport,
+  hasProject = true,
+  onCompile,
   mainFile,
   onJumpToLine,
   onExport,
@@ -265,10 +270,13 @@ export default function PdfPreview({
   const canJump = (d: LatexDiagnostic) =>
     d.line !== undefined && (d.file === undefined || d.file === mainFile || `./${d.file}` === mainFile);
 
+  const isMac = typeof navigator !== "undefined" && /Mac|iPod|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+  const shortcutLabel = isMac ? "⌘S" : "Ctrl+S";
+
   return (
     <div className="h-full flex flex-col bg-mk-bg relative overflow-hidden">
       {/* Viewer toolbar */}
-      <div className="flex items-center gap-1 h-8 px-2 border-b border-mk-bg3 bg-mk-bg2 text-[11px] text-mk-fg3 select-none shrink-0">
+      <div className="flex items-center gap-1.5 h-9 px-2.5 border-b border-mk-bg3 bg-mk-bg2 text-[11px] text-mk-fg3 select-none shrink-0">
         <button
           onClick={() => zoomBy(1 / ZOOM_STEP)}
           disabled={!doc}
@@ -297,7 +305,7 @@ export default function PdfPreview({
         {doc && <span className="ml-2 text-mk-fg4">{doc.numPages === 1 ? t("preview.page") : t("preview.pages", { count: doc.numPages })}</span>}
         <div className="flex-1" />
         {summary && !isCompiling && (
-          <span className="text-mk-fg4 flex items-center gap-1.5">
+          <span className="text-mk-fg4 flex items-center gap-1.5 mr-1">
             {t("preview.compiledWith", { compiler: summary.compiler, seconds: (summary.durationMs / 1000).toFixed(1) })}
             {summary.mode === "chapter" && (
               <span className="px-1 border border-mk-blue/50 text-mk-blue" title={summary.chapter ?? undefined}>
@@ -307,10 +315,29 @@ export default function PdfPreview({
             {summary.draft && <span className="px-1 border border-mk-orange/50 text-mk-orange">{t("build.badge.draft")}</span>}
           </span>
         )}
+
+        {/* Recompile button (Overleaf style, placed right next to Download PDF) */}
+        {onCompile && (
+          <button
+            onClick={onCompile}
+            disabled={!hasProject || isCompiling}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-mk-green/15 hover:bg-mk-green/25 text-mk-green border border-mk-green/35 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer font-medium transition-colors"
+            title={t("preview.recompile.tip", { shortcut: shortcutLabel })}
+          >
+            {isCompiling ? (
+              <Loader2 size={13} className="animate-spin text-mk-green" />
+            ) : (
+              <Play size={12} className="fill-current" />
+            )}
+            <span>{t("preview.recompile")}</span>
+            <span className="text-[10px] opacity-75 font-mono ml-0.5">{shortcutLabel}</span>
+          </button>
+        )}
+
         <button
           onClick={onExport}
           disabled={!canExport}
-          className="flex items-center gap-1 px-2 py-1 hover:bg-mk-bg3 disabled:opacity-40 text-mk-fg2 hover:text-mk-fg cursor-pointer"
+          className="flex items-center gap-1 px-2.5 py-1 rounded hover:bg-mk-bg3 disabled:opacity-40 disabled:cursor-not-allowed text-mk-fg2 hover:text-mk-fg cursor-pointer transition-colors"
           title={t("preview.export.tip")}
         >
           <Download size={13} />
@@ -320,7 +347,7 @@ export default function PdfPreview({
 
       {/* Loading overlay during compilation */}
       {isCompiling && !quietCompile && (
-        <div className="absolute inset-x-0 top-8 z-20 flex justify-center pointer-events-none">
+        <div className="absolute inset-x-0 top-9 z-20 flex justify-center pointer-events-none">
           <div className="mt-3 flex items-center gap-2 px-3 py-1.5 bg-mk-bg2/95 border border-mk-bg3 text-xs text-mk-fg2 shadow-lg">
             <Loader2 size={14} className="animate-spin text-mk-yellow" />
             {t("preview.compiling")}
