@@ -6,6 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+use crate::cloud::{self, CloudLocation};
 use crate::fsutil::{resolve_inside, write_atomic};
 
 pub const COLLAB_DIR: &str = ".texcollab";
@@ -49,6 +50,8 @@ pub struct ProjectData {
     pub room_id: Option<String>,
     /// Raw bytes of `.texcollab/crdt_state.bin`, if any.
     pub crdt_state: Option<Vec<u8>>,
+    /// Desktop sync client keeping the folder in the cloud (Google Drive, iCloud, …) or `local`.
+    pub cloud: CloudLocation,
 }
 
 /// Reads `.texcollab/room.json` if present. `Ok(None)` when the project is in solo mode.
@@ -209,6 +212,7 @@ pub fn read_project(project_path: &str, preferred_main: Option<&str>) -> Result<
         is_collab: room_meta.is_some(),
         room_id: room_meta.map(|m| m.room_id),
         crdt_state,
+        cloud: cloud::detect(&path),
     })
 }
 

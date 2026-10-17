@@ -18,6 +18,16 @@ export interface ProjectData {
   is_collab: boolean;
   room_id: string | null;
   crdt_state: number[] | null; // Vec<u8> arrives as number[]
+  /** Desktop sync client that keeps the folder in the cloud, detected from its path. */
+  cloud: CloudLocation;
+}
+
+export type CloudProvider = "google_drive" | "onedrive" | "dropbox" | "icloud" | "box" | "local";
+
+export interface CloudLocation {
+  provider: CloudProvider;
+  /** Account from the sync folder name (email, "Personal", company), when present. */
+  account: string | null;
 }
 
 export interface RoomMeta {

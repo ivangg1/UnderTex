@@ -32,6 +32,13 @@ compile limits.
 - **On-demand P2P collaboration** (Google-Docs style, live cursors): press
   *Share* and either share the folder through your cloud **or** send the room ID
   (a teammate joins with *Join*, no shared folder needed).
+- **Cloud folder detection**: the room panel and the top-bar tooltip show which
+  sync client keeps the project (Google Drive, iCloud Drive, OneDrive, Dropbox,
+  Box) and the account from its folder name, e.g. *Google Drive ·
+  ana@gmail.com*. Detection is path-based only (macOS `~/Library/CloudStorage`,
+  `G:\My Drive`, `%USERPROFILE%\OneDrive`, `~/Dropbox`, …), no cloud API or
+  sign-in. When a host's project is local, the panel reminds them that guests
+  only get the root `.tex` live, not images or `.bib` files.
 - **Dynamic host election**: in a room only the peer with the lowest `clientID`
   writes to disk (this is what avoids Drive/iCloud *conflicted copies*). If the
   host drops, the next peer takes over within milliseconds and consolidates the

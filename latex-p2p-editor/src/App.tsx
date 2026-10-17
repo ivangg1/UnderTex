@@ -32,6 +32,7 @@ import {
   historyRead,
   historyDelete,
   type BuildOptions,
+  type CloudLocation,
   type CompileOutput,
   type CompilerInfo,
   type SnapshotMeta,
@@ -123,6 +124,7 @@ interface ProjectInfo {
   path: string;
   mainFile: string;
   texFiles: string[];
+  cloud: CloudLocation;
 }
 
 /** The editor binds to these; a new object means a new editor instance. */
@@ -531,7 +533,7 @@ function App() {
       });
       managerRef.current = manager;
 
-      const info = { path: data.project_path, mainFile: data.main_file, texFiles: data.tex_files };
+      const info = { path: data.project_path, mainFile: data.main_file, texFiles: data.tex_files, cloud: data.cloud };
       projectRef.current = info;
       setProject(info);
       setSession({
@@ -799,6 +801,7 @@ function App() {
         peers={peers}
         status={connectionStatus}
         diagnostics={diagnostics}
+        cloud={project?.cloud ?? null}
         onStopCollab={handleStopCollab}
       />
     );
@@ -874,6 +877,7 @@ function App() {
       <div className="flex-1 min-w-0 flex flex-col">
         <TopBar
           projectPath={project?.path ?? null}
+          cloud={project?.cloud ?? null}
           mainFile={project?.mainFile ?? null}
           texFiles={project?.texFiles ?? []}
           mode={mode}

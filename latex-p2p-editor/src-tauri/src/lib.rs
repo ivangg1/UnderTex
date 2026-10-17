@@ -5,6 +5,7 @@
 //! * [`compiler`] – cross-platform engine discovery and the cached local compile pipeline.
 //! * [`fsutil`]   – atomic writes and path validation.
 
+mod cloud;
 mod compiler;
 mod fsutil;
 mod history;

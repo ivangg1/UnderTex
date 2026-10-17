@@ -21,7 +21,8 @@ import {
 } from "lucide-react";
 import { useI18n } from "../i18n";
 import type { CollabMode, ConnectionStatus, PeerInfo, SaveState } from "../services/collabManager";
-import type { CompilerInfo } from "../services/tauriBridge";
+import type { CloudLocation, CompilerInfo } from "../services/tauriBridge";
+import { cloudLabel, isCloud } from "../services/cloud";
 import { chapterScope, scopeChapter, type BuildScope, type BuildSettings } from "../services/buildMode";
 import type { CompileSummary } from "./PdfPreview";
 import { connectionLabel } from "./ConnectionBadge";
@@ -29,6 +30,8 @@ import { folderName } from "../services/recents";
 
 interface TopBarProps {
   projectPath: string | null;
+  /** Cloud sync client of the project folder, shown in the breadcrumb tooltip. */
+  cloud: CloudLocation | null;
   mainFile: string | null;
   texFiles: string[];
   mode: CollabMode;
@@ -61,6 +64,7 @@ const ITEM = "flex items-center gap-1.5 px-2.5 h-full border-l border-mk-bg3";
 
 export default function TopBar({
   projectPath,
+  cloud,
   mainFile,
   texFiles,
   mode,
@@ -129,8 +133,11 @@ export default function TopBar({
   return (
     <header className="h-9 shrink-0 flex items-center bg-mk-bg2 border-b border-mk-bg3 text-[11px] text-mk-fg3 select-none">
       {/* Breadcrumb */}
-      <div className="flex items-center gap-1.5 px-3 h-full min-w-0" title={projectPath ?? undefined}>
-        <FolderOpen size={13} className="shrink-0" />
+      <div
+        className="flex items-center gap-1.5 px-3 h-full min-w-0"
+        title={projectPath ? (cloud ? `${cloudLabel(cloud, t)}\n${projectPath}` : projectPath) : undefined}
+      >
+        {isCloud(cloud) ? <Cloud size={13} className="shrink-0 text-mk-blue" /> : <FolderOpen size={13} className="shrink-0" />}
         {projectPath ? (
           <>
             <span className="text-mk-fg2 font-medium truncate max-w-48">{folderName(projectPath)}</span>

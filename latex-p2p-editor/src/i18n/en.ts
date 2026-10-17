@@ -90,6 +90,16 @@ export const en = {
   "collab.hostWrites": "Host · writes to disk",
   "collab.guestRam": "Guest · in memory",
   "collab.connection": "Connection",
+  "collab.files": "Project files",
+  "collab.files.cloudTip": "Synced by {provider}: peers who have this folder shared see the same images, .bib and chapters.",
+  "collab.files.localHint":
+    "This folder is only on this computer. Guests get the root .tex live, but images, .bib and other files only if they have them too: put the project in Google Drive, iCloud Drive, OneDrive or Dropbox and share the folder.",
+  "cloud.provider.google_drive": "Google Drive",
+  "cloud.provider.onedrive": "OneDrive",
+  "cloud.provider.dropbox": "Dropbox",
+  "cloud.provider.icloud": "iCloud Drive",
+  "cloud.provider.box": "Box",
+  "cloud.provider.local": "Local folder",
   "collab.disconnect": "Disconnect and work solo",
   "collab.disconnect.tip": "Close WebRTC and return to solo mode",
 

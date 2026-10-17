@@ -92,6 +92,16 @@ export const es: Record<keyof typeof en, string> = {
   "collab.hostWrites": "Host · escribe en disco",
   "collab.guestRam": "Invitado · en memoria",
   "collab.connection": "Conexión",
+  "collab.files": "Archivos del proyecto",
+  "collab.files.cloudTip": "Sincronizada por {provider}: quienes tengan esta carpeta compartida ven las mismas imágenes, .bib y capítulos.",
+  "collab.files.localHint":
+    "Esta carpeta solo está en este ordenador. Los invitados reciben el .tex raíz en vivo, pero las imágenes, el .bib y los demás archivos solo si también los tienen: pon el proyecto en Google Drive, iCloud Drive, OneDrive o Dropbox y comparte la carpeta.",
+  "cloud.provider.google_drive": "Google Drive",
+  "cloud.provider.onedrive": "OneDrive",
+  "cloud.provider.dropbox": "Dropbox",
+  "cloud.provider.icloud": "iCloud Drive",
+  "cloud.provider.box": "Box",
+  "cloud.provider.local": "Carpeta local",
   "collab.disconnect": "Desconectar y trabajar solo",
   "collab.disconnect.tip": "Cerrar WebRTC y volver al modo individual",
 
