@@ -17,7 +17,6 @@ import {
   Loader2,
   LogIn,
   AppWindow,
-  Play,
   Search,
   Share2,
   Users,
@@ -49,12 +48,10 @@ interface TopBarProps {
   /** Chapters the root file `\include`s (the scope control is hidden without them). */
   chapters: string[];
   buildSettings: BuildSettings;
-  buildTitle: string;
   canExport: boolean;
   onChangeScope: (scope: BuildScope) => void;
   onToggleDraft: () => void;
   onTogglePreamble: () => void;
-  onCompile: () => void;
   onToggleAuto: () => void;
   onExport: () => void;
   onShare: () => void;
@@ -216,28 +213,26 @@ export default function TopBar(props: TopBarProps) {
 
           <span className={SEP} />
 
-          {/* Primary: Build (+ auto switch) */}
-          <div className="flex items-stretch h-7">
-            <button
-              onClick={props.onCompile}
-              disabled={isCompiling}
-              className="flex items-center gap-1.5 pl-2.5 pr-3 rounded-l bg-mk-green text-mk-bg2 font-semibold hover:brightness-110 cursor-pointer disabled:opacity-60 disabled:cursor-wait"
-              title={props.buildTitle}
-            >
-              {isCompiling ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} fill="currentColor" />}
-              {isCompiling ? t("toolbar.compiling") : t("rail.build")}
-            </button>
-            <button
-              onClick={props.onToggleAuto}
-              className={`flex items-center px-1.5 rounded-r border-l border-mk-bg2/40 cursor-pointer ${
-                props.autoCompile ? "bg-mk-green text-mk-bg2 hover:brightness-110" : "bg-mk-bg3 text-mk-fg3 hover:text-mk-fg"
-              }`}
-              title={props.autoCompile ? t("rail.auto.on") : t("rail.auto.off")}
-              aria-pressed={props.autoCompile}
-            >
-              {props.autoCompile ? <Zap size={12} fill="currentColor" /> : <ZapOff size={12} />}
-            </button>
-          </div>
+          {/* Auto / manual build (building itself is Recompile in the preview, or ⌘S) */}
+          <button
+            onClick={props.onToggleAuto}
+            className={`flex items-center gap-1.5 h-7 px-2.5 rounded border cursor-pointer ${
+              props.autoCompile
+                ? "border-mk-green/60 bg-mk-green/15 text-mk-green hover:bg-mk-green/25"
+                : "border-mk-bg4 text-mk-fg3 hover:text-mk-fg hover:bg-mk-bg3"
+            }`}
+            title={props.autoCompile ? t("rail.auto.on") : t("rail.auto.off")}
+            aria-pressed={props.autoCompile}
+          >
+            {isCompiling ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : props.autoCompile ? (
+              <Zap size={13} fill="currentColor" />
+            ) : (
+              <ZapOff size={13} />
+            )}
+            {props.autoCompile ? t("topbar.autoBuild") : t("topbar.manualBuild")}
+          </button>
 
           {/* Primary: Share / Room */}
           {mode === "collab" ? (

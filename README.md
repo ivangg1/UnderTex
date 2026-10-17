@@ -95,9 +95,9 @@ compile limits.
   system; switch from the rail (sun / moon) or the profile panel. Every color is
   a CSS variable, so the editor, panels and previews switch instantly.
 - **IDE layout**: the top bar holds the project menu (new, open, join, recent,
-  new window), the root file, *Go to file…* and the primary actions — **Build**
-  (with the auto-build switch), **Share** / Room and **Export** — plus the
-  build options (scope, draft, preamble). The left rail switches views (Files,
+  new window), the root file, *Go to file…*, the build options (scope, draft,
+  preamble), the **Auto / Manual build** switch, **Share** / Room and
+  **Export**. Building on demand is **Recompile** in the PDF preview (or `⌘S`). The left rail switches views (Files,
   Outline, History, Room) with one side panel at a time; a bottom status bar
   shows mode, connection, save state, problems, cursor line, compiler and the
   last build. Draggable editor | PDF split, Monokai Pro palette. English and

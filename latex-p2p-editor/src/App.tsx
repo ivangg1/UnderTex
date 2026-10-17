@@ -1631,12 +1631,10 @@ function App() {
         compilerName={compilerInfo?.name ?? null}
         chapters={chapters}
         buildSettings={buildSettings}
-        buildTitle={buildTitle}
         canExport={canExport}
         onChangeScope={handleChangeScope}
         onToggleDraft={handleToggleDraft}
         onTogglePreamble={handleTogglePreamble}
-        onCompile={handleCompile}
         onToggleAuto={toggleAutoCompile}
         onExport={() => void handleExport()}
         onShare={handleShare}
@@ -1755,6 +1753,7 @@ function App() {
                     canExport={canExport}
                     hasProject={project !== null}
                     onCompile={handleCompile}
+                    compileTitle={buildTitle}
                     resolveFile={resolveFile}
                     onJump={(file, line) => goTo(file, line)}
                     problemsRequest={problemsRequest}

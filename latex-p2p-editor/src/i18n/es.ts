@@ -379,4 +379,6 @@ export const es: Record<keyof typeof en, string> = {
   "theme.dark": "Oscuro",
   "theme.light": "Claro",
   "theme.toggle": "Tema: {theme} (clic para cambiar)",
+  "topbar.autoBuild": "Compilación auto",
+  "topbar.manualBuild": "Compilación manual",
 };

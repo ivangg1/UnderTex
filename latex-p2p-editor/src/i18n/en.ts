@@ -377,4 +377,6 @@ export const en = {
   "theme.dark": "Dark",
   "theme.light": "Light",
   "theme.toggle": "Theme: {theme} (click to change)",
+  "topbar.autoBuild": "Auto build",
+  "topbar.manualBuild": "Manual build",
 } as const;
