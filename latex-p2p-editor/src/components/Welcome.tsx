@@ -1,6 +1,6 @@
 // Welcome view (no project open): start actions, recent projects, how it works.
 
-import { AlertTriangle, FolderOpen, LogIn, X } from "lucide-react";
+import { AlertTriangle, FilePlus, FolderOpen, LogIn, X } from "lucide-react";
 import { useI18n } from "../i18n";
 import { folderName, type RecentProject } from "../services/recents";
 
@@ -9,6 +9,7 @@ interface WelcomeProps {
   compilerMissing: boolean;
   compilerHint: string | null;
   onOpenFolder: () => void;
+  onNew: () => void;
   onJoin: () => void;
   onOpenRecent: (project: RecentProject) => void;
   onRemoveRecent: (path: string) => void;
@@ -21,6 +22,7 @@ export default function Welcome({
   compilerMissing,
   compilerHint,
   onOpenFolder,
+  onNew,
   onJoin,
   onOpenRecent,
   onRemoveRecent,
@@ -50,6 +52,15 @@ export default function Welcome({
           <section>
             <h2 className={HEADING}>{t("welcome.start")}</h2>
             <ul className="flex flex-col gap-1 text-sm">
+              <li>
+                <button
+                  onClick={onNew}
+                  className="w-full flex items-center gap-2.5 px-2 py-1.5 -mx-2 text-mk-blue hover:bg-mk-bg3/60 cursor-pointer"
+                >
+                  <FilePlus size={15} />
+                  <span>{t("new.title")}</span>
+                </button>
+              </li>
               <li>
                 <button
                   onClick={onOpenFolder}

@@ -179,6 +179,48 @@ export const es: Record<keyof typeof en, string> = {
   "topbar.autoOn": "auto",
   "topbar.manual": "manual",
 
+  // ─── Nuevo proyecto ─────────────────────────────────────────────
+  "rail.new": "Nuevo",
+  "new.title": "Nuevo proyecto",
+  "new.name": "Nombre del proyecto",
+  "new.name.placeholder": "mi-articulo",
+  "new.template": "Plantilla",
+  "new.location": "Ubicación",
+  "new.location.pick": "Elegir carpeta…",
+  "new.location.help": "El proyecto se crea como subcarpeta aquí.",
+  "new.create": "Crear y abrir",
+  "template.blank": "En blanco",
+  "template.blank.desc": "Solo el esqueleto del documento.",
+  "template.article": "Artículo",
+  "template.article.desc": "Secciones, ecuaciones, figuras y bibliografía BibTeX.",
+  "template.report": "Informe / tesis",
+  "template.report.desc": "Capítulos en archivos separados con \\input, índice, bibliografía.",
+  "template.beamer": "Presentación (beamer)",
+  "template.beamer.desc": "Diapositivas con el tema metropolis.",
+  "error.createProject": "No se pudo crear el proyecto: {message}",
+
+  // ─── Historial ──────────────────────────────────────────────────
+  "rail.history": "Historial",
+  "history.title": "Historial de versiones",
+  "history.help": "Las versiones se guardan en este equipo, fuera de la carpeta del proyecto. Se toman instantáneas automáticas al guardar; las versiones con nombre se conservan siempre.",
+  "history.saveVersion": "Guardar versión",
+  "history.label.placeholder": "Etiqueta (p. ej. borrador enviado)",
+  "history.empty": "Todavía no hay versiones.",
+  "history.auto": "auto",
+  "history.restore": "Restaurar",
+  "history.delete": "Eliminar versión",
+  "history.compare": "Comparar con la actual",
+  "history.current": "Actual",
+  "history.diff.title": "{label} · {time}",
+  "history.diff.stats": "+{added} / −{removed} líneas",
+  "history.diff.identical": "Idéntica al documento actual.",
+  "history.restored": "Versión restaurada. Se guardó una instantánea del contenido anterior.",
+  "history.bytes": "{kb} KB",
+  "error.history": "Error de historial: {message}",
+
+  // ─── Zoom ───────────────────────────────────────────────────────
+  "zoom.level": "Zoom de la interfaz {percent}% · clic para restablecer (⌥0)",
+
   // ─── Errores ────────────────────────────────────────────────────
   "error.openProject": "No se pudo abrir el proyecto: {message}",
   "error.join": "No se pudo unir a la sala: {message}",

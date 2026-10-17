@@ -5,7 +5,9 @@ import type { ReactNode } from "react";
 import {
   Crown,
   Download,
+  FilePlus,
   FolderOpen,
+  History,
   Languages,
   Loader2,
   LogIn,
@@ -20,7 +22,7 @@ import { useI18n } from "../i18n";
 import type { CollabMode, CollabUser, ConnectionStatus } from "../services/collabManager";
 import { connectionLabel } from "./ConnectionBadge";
 
-export type PanelId = "room" | "join" | "profile";
+export type PanelId = "room" | "join" | "profile" | "new" | "history";
 
 interface SidebarProps {
   hasProject: boolean;
@@ -102,6 +104,14 @@ export default function Sidebar({
       {/* Rail */}
       <nav className="w-16 shrink-0 flex flex-col bg-mk-bg2 border-r border-mk-bg3 select-none">
         <RailButton
+          icon={<FilePlus size={20} strokeWidth={1.75} />}
+          label={t("rail.new")}
+          title={t("new.title")}
+          onClick={() => onTogglePanel("new")}
+          active={activePanel === "new"}
+          disabled={isCompiling}
+        />
+        <RailButton
           icon={<FolderOpen size={20} strokeWidth={1.75} />}
           label={t("rail.open")}
           title={t("toolbar.open.tip")}
@@ -170,6 +180,14 @@ export default function Sidebar({
           title={t("preview.export.tip")}
           onClick={onExport}
           disabled={!canExport}
+        />
+        <RailButton
+          icon={<History size={20} strokeWidth={1.75} />}
+          label={t("rail.history")}
+          title={t("history.title")}
+          onClick={() => onTogglePanel("history")}
+          active={activePanel === "history"}
+          disabled={!hasProject}
         />
 
         <div className="flex-1" />

@@ -7,6 +7,7 @@
 
 mod compiler;
 mod fsutil;
+mod history;
 mod project;
 
 use std::collections::HashSet;
@@ -17,7 +18,8 @@ use std::time::Duration;
 use tauri::{Emitter, Manager, WindowEvent};
 
 use compiler::{CompileOutput, CompilerInfo};
-use project::{ProjectData, RoomMeta};
+use history::{HistoryStore, SaveOutcome, SnapshotMeta};
+use project::{ProjectData, ProjectFile, RoomMeta};
 
 /// Event sent to a window when the user asks to close it. The frontend flushes
 /// pending saves and then calls `close_window`.
@@ -35,6 +37,64 @@ struct ClosingWindows(Mutex<HashSet<String>>);
 #[tauri::command]
 fn read_project(project_path: String, main_file: Option<String>) -> Result<ProjectData, String> {
     project::read_project(&project_path, main_file.as_deref())
+}
+
+/// Scaffolds a new project folder from template files and returns its path.
+#[tauri::command]
+fn create_project(parent_dir: String, name: String, files: Vec<ProjectFile>) -> Result<String, String> {
+    project::create_project(&parent_dir, &name, &files)
+}
+
+// ─── Version history (stored in the app data dir, never in the project) ──
+
+fn history_store(app: &tauri::AppHandle) -> Result<HistoryStore, String> {
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("App data directory unavailable: {e}"))?
+        .join("history");
+    Ok(HistoryStore::new(root))
+}
+
+#[tauri::command]
+async fn history_list(app: tauri::AppHandle, project_path: String) -> Result<Vec<SnapshotMeta>, String> {
+    let store = history_store(&app)?;
+    tauri::async_runtime::spawn_blocking(move || store.list(&project_path))
+        .await
+        .map_err(|e| format!("History task panicked: {e}"))
+}
+
+#[tauri::command]
+async fn history_save(
+    app: tauri::AppHandle,
+    project_path: String,
+    main_file: String,
+    content: String,
+    label: Option<String>,
+    author: Option<String>,
+) -> Result<SaveOutcome, String> {
+    let store = history_store(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        store.save(&project_path, &main_file, &content, label.as_deref(), author.as_deref())
+    })
+    .await
+    .map_err(|e| format!("History task panicked: {e}"))?
+}
+
+#[tauri::command]
+async fn history_read(app: tauri::AppHandle, project_path: String, id: String) -> Result<String, String> {
+    let store = history_store(&app)?;
+    tauri::async_runtime::spawn_blocking(move || store.read(&project_path, &id))
+        .await
+        .map_err(|e| format!("History task panicked: {e}"))?
+}
+
+#[tauri::command]
+async fn history_delete(app: tauri::AppHandle, project_path: String, id: String) -> Result<Vec<SnapshotMeta>, String> {
+    let store = history_store(&app)?;
+    tauri::async_runtime::spawn_blocking(move || store.delete(&project_path, &id))
+        .await
+        .map_err(|e| format!("History task panicked: {e}"))?
 }
 
 /// Initialize collaboration on demand. `room_id` joins an existing room (shared by a
@@ -175,6 +235,11 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             read_project,
+            create_project,
+            history_list,
+            history_save,
+            history_read,
+            history_delete,
             init_collab_project,
             save_tex_atomic,
             save_crdt_state,

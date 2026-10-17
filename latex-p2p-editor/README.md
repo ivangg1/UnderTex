@@ -1,18 +1,18 @@
 # latex-p2p-editor (app)
 
-Frontend React + CodeMirror 6 y backend Tauri v2 del editor. La documentación
-general, la arquitectura y la demo están en el [README raíz](../README.md).
+React + CodeMirror 6 frontend and Tauri v2 backend of the editor. General
+documentation, architecture and the demo live in the [root README](../README.md).
 
 ```bash
 npm install
-npm run tauri dev      # app de escritorio en desarrollo
+npm run tauri dev      # desktop app in development
 npm test               # vitest
 npm run build          # tsc + vite build
 (cd src-tauri && cargo test)
 ```
 
-Variables de entorno opcionales (`.env`):
+Optional environment variables (`.env`):
 
 ```env
-VITE_SIGNALING_SERVER=wss://tu-servidor-de-senalizacion
+VITE_SIGNALING_SERVER=wss://your-signaling-server
 ```

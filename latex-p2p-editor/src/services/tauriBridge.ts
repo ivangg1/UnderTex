@@ -117,6 +117,71 @@ export async function saveProjectState(
   });
 }
 
+/** A file to scaffold when creating a project. */
+export interface ProjectFile {
+  path: string;
+  content: string;
+}
+
+/** Creates `<parentDir>/<name>` with the given files and returns the project path. */
+export async function createProject(parentDir: string, name: string, files: ProjectFile[]): Promise<string> {
+  return invoke<string>("create_project", { parentDir, name, files });
+}
+
+// ─── Version history (app data dir, per project) ────────────────────
+
+export type SnapshotKind = "auto" | "manual";
+
+export interface SnapshotMeta {
+  id: string;
+  created_at_ms: number;
+  kind: SnapshotKind;
+  label?: string;
+  author?: string;
+  main_file: string;
+  bytes: number;
+  hash: string;
+}
+
+export interface SaveSnapshotOutcome {
+  snapshot: SnapshotMeta;
+  created: boolean;
+}
+
+export async function historyList(projectPath: string): Promise<SnapshotMeta[]> {
+  return invoke<SnapshotMeta[]>("history_list", { projectPath });
+}
+
+/** Stores a snapshot; `label` makes it a named (never pruned) version. */
+export async function historySave(
+  projectPath: string,
+  mainFile: string,
+  content: string,
+  label?: string | null,
+  author?: string | null
+): Promise<SaveSnapshotOutcome> {
+  return invoke<SaveSnapshotOutcome>("history_save", {
+    projectPath,
+    mainFile,
+    content,
+    label: label ?? null,
+    author: author ?? null,
+  });
+}
+
+export async function historyRead(projectPath: string, id: string): Promise<string> {
+  return invoke<string>("history_read", { projectPath, id });
+}
+
+export async function historyDelete(projectPath: string, id: string): Promise<SnapshotMeta[]> {
+  return invoke<SnapshotMeta[]>("history_delete", { projectPath, id });
+}
+
+/** Opens the native folder picker for a parent directory. */
+export async function pickParentFolder(): Promise<string | null> {
+  return open({ directory: true, multiple: false, title: "Parent folder for the new project" });
+}
+
 // ─── Compiler ───────────────────────────────────────────────────────
 
 /** Reports the available LaTeX engine (or installation instructions). */

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import "./App.css";
+import { documentDir } from "@tauri-apps/api/path";
 
 import Sidebar, { type PanelId } from "./components/Sidebar";
 import TopBar from "./components/TopBar";
@@ -8,11 +9,16 @@ import SplitPane from "./components/SplitPane";
 import CollabPanel from "./components/CollabPanel";
 import JoinPanel from "./components/JoinPanel";
 import ProfilePanel, { PRESET_COLORS } from "./components/ProfilePanel";
+import NewProjectPanel from "./components/NewProjectPanel";
+import HistoryPanel from "./components/HistoryPanel";
+import DiffView from "./components/DiffView";
 import LatexEditor, { type LatexEditorHandle } from "./components/LatexEditor";
 import PdfPreview, { type CompileSummary } from "./components/PdfPreview";
 import {
   pickProjectFolder,
+  pickParentFolder,
   readProject,
+  createProject,
   initCollabProject,
   compileLatex,
   readBuildFile,
@@ -21,7 +27,12 @@ import {
   openNewWindow,
   onCloseRequested,
   closeWindow,
+  historyList,
+  historySave,
+  historyRead,
+  historyDelete,
   type CompilerInfo,
+  type SnapshotMeta,
 } from "./services/tauriBridge";
 import {
   CollabManager,
@@ -34,12 +45,18 @@ import {
 } from "./services/collabManager";
 import { parseLatexLog, type LatexDiagnostic } from "./services/latexLog";
 import { addRecent, readRecents, removeRecent, type RecentProject } from "./services/recents";
+import { findTemplate } from "./services/templates";
 import { useI18n, type MessageKey } from "./i18n";
 import type * as Y from "yjs";
 import type { Awareness } from "y-protocols/awareness";
 
 const AUTO_COMPILE_KEY = "latex_auto_compile";
-const AUTO_COMPILE_DEBOUNCE_MS = 1500;
+const AUTO_COMPILE_DEBOUNCE_MS = 2500;
+const AUTO_SNAPSHOT_INTERVAL_MS = 2 * 60 * 1000;
+const UI_ZOOM_KEY = "latex_ui_zoom";
+const UI_ZOOM_MIN = 0.6;
+const UI_ZOOM_MAX = 1.8;
+const UI_ZOOM_STEP = 0.1;
 
 function getSavedUser(): CollabUser {
   // sessionStorage: each window/instance gets its own identity.
@@ -53,6 +70,16 @@ function getSavedUser(): CollabUser {
   sessionStorage.setItem("latex_user_name", name);
   sessionStorage.setItem("latex_user_color", color);
   return { name, color };
+}
+
+function readZoom(): number {
+  try {
+    const z = Number(localStorage.getItem(UI_ZOOM_KEY));
+    if (z >= UI_ZOOM_MIN && z <= UI_ZOOM_MAX) return z;
+  } catch {
+    // ignore
+  }
+  return 1;
 }
 
 function errorMessage(err: unknown): string {
@@ -94,15 +121,21 @@ const EMPTY_COMPILE: CompileState = {
 
 const IDLE_SAVE: SaveState = { status: "idle", lastSavedAt: null, error: null };
 
+interface Banner {
+  kind: "error" | "info";
+  text: string;
+}
+
 function App() {
   const { t } = useI18n();
 
   // ─── Project & session ──────────────────────────────────────────
   const [project, setProject] = useState<ProjectInfo | null>(null);
   const [session, setSession] = useState<EditorSession | null>(null);
-  const [banner, setBanner] = useState<string | null>(null);
+  const [banner, setBanner] = useState<Banner | null>(null);
   const [recents, setRecents] = useState<RecentProject[]>(() => readRecents());
   const [activePanel, setActivePanel] = useState<PanelId | null>(null);
+  const [defaultParent, setDefaultParent] = useState<string | null>(null);
 
   // ─── Collaboration ──────────────────────────────────────────────
   const [currentUser, setCurrentUser] = useState<CollabUser>(getSavedUser);
@@ -117,6 +150,7 @@ function App() {
   // ─── Compiler ───────────────────────────────────────────────────
   const [compilerInfo, setCompilerInfo] = useState<CompilerInfo | null>(null);
   const [isCompiling, setIsCompiling] = useState(false);
+  const [compileQuiet, setCompileQuiet] = useState(false);
   const [compile, setCompile] = useState<CompileState>(EMPTY_COMPILE);
   const [pageCount, setPageCount] = useState<number | null>(null);
   const [autoCompile, setAutoCompileState] = useState<boolean>(() => {
@@ -127,78 +161,102 @@ function App() {
     }
   });
 
+  // ─── History ────────────────────────────────────────────────────
+  const [snapshots, setSnapshots] = useState<SnapshotMeta[]>([]);
+  const [selectedSnapshot, setSelectedSnapshot] = useState<SnapshotMeta | null>(null);
+  const [snapshotText, setSnapshotText] = useState<string | null>(null);
+  const [currentText, setCurrentText] = useState("");
+
+  // ─── UI zoom ────────────────────────────────────────────────────
+  const [uiZoom, setUiZoom] = useState<number>(readZoom);
+
   const managerRef = useRef<CollabManager | null>(null);
   const editorRef = useRef<LatexEditorHandle | null>(null);
   const compilingRef = useRef(false);
-  const compileQueuedRef = useRef(false);
+  const compileQueuedRef = useRef<null | { auto: boolean }>(null);
+  const lastCompiledRef = useRef<{ text: string; success: boolean } | null>(null);
   const autoCompileTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastAutoSnapshotRef = useRef(0);
   const currentUserRef = useRef(currentUser);
   currentUserRef.current = currentUser;
+  const projectRef = useRef(project);
+  projectRef.current = project;
 
   const compilerHint =
     compilerInfo && compilerInfo.name === null ? t(`compiler.hint.${compilerInfo.os}` as MessageKey) : null;
 
-  // ─── Compiler detection ─────────────────────────────────────────
+  // ─── Startup: compiler, default project location ────────────────
   useEffect(() => {
     detectCompiler()
       .then(setCompilerInfo)
       .catch((err) => console.error("detect_compiler failed:", err));
+    documentDir()
+      .then((dir) => setDefaultParent(dir))
+      .catch(() => setDefaultParent(null));
   }, []);
 
   // ─── Compile ────────────────────────────────────────────────────
-  const runCompile = useCallback(async () => {
-    const manager = managerRef.current;
-    const current = project;
-    if (!manager || !current) return;
-    if (compilingRef.current) {
-      compileQueuedRef.current = true;
-      return;
-    }
-    compilingRef.current = true;
-    setIsCompiling(true);
-    try {
-      await manager.flushSave();
+  const runCompile = useCallback(
+    async (opts: { auto?: boolean } = {}) => {
+      const manager = managerRef.current;
+      const current = projectRef.current;
+      if (!manager || !current) return;
+      const auto = opts.auto ?? false;
+      if (compilingRef.current) {
+        compileQueuedRef.current = { auto: auto && (compileQueuedRef.current?.auto ?? true) };
+        return;
+      }
       const text = manager.getText();
-      const result = await compileLatex(current.path, current.mainFile, text);
-      const parsed = parseLatexLog(result.logs);
-      let pdfData: Uint8Array | null = null;
-      if (result.pdf_path) {
-        try {
-          pdfData = await readBuildFile(result.pdf_path);
-        } catch (err) {
-          console.error("Failed to read compiled PDF:", err);
+      // Automatic builds skip unchanged content; a manual build always runs.
+      if (auto && lastCompiledRef.current && lastCompiledRef.current.text === text && lastCompiledRef.current.success) {
+        return;
+      }
+      compilingRef.current = true;
+      setIsCompiling(true);
+      setCompileQuiet(auto);
+      try {
+        await manager.flushSave();
+        const result = await compileLatex(current.path, current.mainFile, text);
+        const parsed = parseLatexLog(result.logs);
+        let pdfData: Uint8Array | null = null;
+        if (result.pdf_path) {
+          try {
+            pdfData = await readBuildFile(result.pdf_path);
+          } catch (err) {
+            console.error("Failed to read compiled PDF:", err);
+          }
+        }
+        lastCompiledRef.current = { text, success: result.success };
+        setCompile((prev) => ({
+          pdfData: pdfData ?? prev.pdfData, // keep the last good PDF visible on failure
+          pdfVersion: pdfData ? prev.pdfVersion + 1 : prev.pdfVersion,
+          pdfPath: result.pdf_path ?? prev.pdfPath,
+          logs: result.logs,
+          diagnostics: parsed,
+          summary: {
+            success: result.success,
+            compiler: result.compiler,
+            durationMs: result.duration_ms,
+            timedOut: result.timed_out,
+          },
+          fatalError: null,
+        }));
+      } catch (err: unknown) {
+        const message = errorMessage(err);
+        console.error("Compilation error:", err);
+        setCompile((prev) => ({ ...prev, logs: message, diagnostics: [], summary: null, fatalError: message }));
+      } finally {
+        compilingRef.current = false;
+        setIsCompiling(false);
+        const queued = compileQueuedRef.current;
+        if (queued) {
+          compileQueuedRef.current = null;
+          setTimeout(() => void runCompile(queued), 0);
         }
       }
-      setCompile((prev) => ({
-        pdfData: pdfData ?? prev.pdfData, // keep the last good PDF visible on failure
-        pdfVersion: pdfData ? prev.pdfVersion + 1 : prev.pdfVersion,
-        pdfPath: result.pdf_path ?? prev.pdfPath,
-        logs: result.logs,
-        diagnostics: parsed,
-        summary: {
-          success: result.success,
-          compiler: result.compiler,
-          durationMs: result.duration_ms,
-          timedOut: result.timed_out,
-        },
-        fatalError: null,
-      }));
-    } catch (err: unknown) {
-      const message = errorMessage(err);
-      console.error("Compilation error:", err);
-      setCompile((prev) => ({ ...prev, logs: message, diagnostics: [], summary: null, fatalError: message }));
-    } finally {
-      compilingRef.current = false;
-      setIsCompiling(false);
-      if (compileQueuedRef.current) {
-        compileQueuedRef.current = false;
-        setTimeout(() => void runCompile(), 0);
-      }
-    }
-  }, [project]);
-
-  const runCompileRef = useRef(runCompile);
-  runCompileRef.current = runCompile;
+    },
+    []
+  );
 
   // Auto-compile: debounce document updates.
   useEffect(() => {
@@ -208,7 +266,7 @@ function App() {
       if (autoCompileTimer.current) clearTimeout(autoCompileTimer.current);
       autoCompileTimer.current = setTimeout(() => {
         autoCompileTimer.current = null;
-        void runCompileRef.current();
+        void runCompile({ auto: true });
       }, AUTO_COMPILE_DEBOUNCE_MS);
     };
     manager.doc.on("update", onUpdate);
@@ -219,7 +277,7 @@ function App() {
         autoCompileTimer.current = null;
       }
     };
-  }, [autoCompile, session]);
+  }, [autoCompile, session, runCompile]);
 
   const toggleAutoCompile = useCallback(() => {
     setAutoCompileState((prev) => {
@@ -233,57 +291,164 @@ function App() {
     });
   }, []);
 
-  // ─── Open project ───────────────────────────────────────────────
-  const openProject = useCallback(async (folder: string, mainFile?: string | null) => {
-    const data = await readProject(folder, mainFile);
-
-    // Flush pending host writes of the previous session before tearing it down.
-    if (managerRef.current) {
-      await managerRef.current.dispose();
-      managerRef.current = null;
+  // ─── History ────────────────────────────────────────────────────
+  const refreshSnapshots = useCallback(async (path: string) => {
+    try {
+      setSnapshots(await historyList(path));
+    } catch (err) {
+      console.error("history_list failed:", err);
     }
-
-    const manager = new CollabManager({
-      projectPath: data.project_path,
-      mainFile: data.main_file,
-      isCollab: data.is_collab,
-      roomId: data.room_id,
-      initialTexContent: data.tex_content,
-      initialCrdtState: data.crdt_state,
-      currentUser: currentUserRef.current,
-      callbacks: {
-        onModeChange: setMode,
-        onHostChange: setIsHost,
-        onPeersChange: setPeers,
-        onStatusChange: (status, diag) => {
-          setConnectionStatus(status);
-          setDiagnostics(diag);
-        },
-        onRoomIdChange: setRoomId,
-        onSaveStateChange: setSaveState,
-      },
-    });
-    managerRef.current = manager;
-
-    setProject({ path: data.project_path, mainFile: data.main_file, texFiles: data.tex_files });
-    setSession({
-      key: `${data.project_path}::${data.main_file}::${Date.now()}`,
-      ytext: manager.ytext,
-      awareness: manager.awareness,
-    });
-    setMode(manager.mode);
-    setRoomId(manager.roomId);
-    setIsHost(manager.isHost);
-    setPeers(manager.peers);
-    setConnectionStatus(manager.status);
-    setDiagnostics(manager.diagnostics);
-    setSaveState(manager.saveState);
-    setCompile(EMPTY_COMPILE);
-    setPageCount(null);
-    setBanner(null);
-    setActivePanel((p) => (p === "join" ? null : p));
-    setRecents(addRecent({ path: data.project_path, mainFile: data.main_file }));
   }, []);
+
+  /** Stores the current text as a snapshot (auto, or named when `label` is given). */
+  const recordSnapshot = useCallback(
+    async (label?: string) => {
+      const manager = managerRef.current;
+      const current = projectRef.current;
+      if (!manager || !current) return;
+      try {
+        await historySave(current.path, current.mainFile, manager.getText(), label || null, currentUserRef.current.name);
+        lastAutoSnapshotRef.current = Date.now();
+        await refreshSnapshots(current.path);
+      } catch (err) {
+        console.error("history_save failed:", err);
+        setBanner({ kind: "error", text: t("error.history", { message: errorMessage(err) }) });
+      }
+    },
+    [refreshSnapshots, t]
+  );
+
+  // Automatic snapshot after a save, at most every AUTO_SNAPSHOT_INTERVAL_MS.
+  useEffect(() => {
+    if (saveState.status !== "saved" || !project) return;
+    if (Date.now() - lastAutoSnapshotRef.current < AUTO_SNAPSHOT_INTERVAL_MS) return;
+    void recordSnapshot();
+  }, [saveState, project, recordSnapshot]);
+
+  // Keep the current text for the diff view while a snapshot is selected.
+  useEffect(() => {
+    const manager = managerRef.current;
+    if (!selectedSnapshot || !manager) return;
+    setCurrentText(manager.getText());
+    const onUpdate = () => setCurrentText(manager.getText());
+    manager.doc.on("update", onUpdate);
+    return () => manager.doc.off("update", onUpdate);
+  }, [selectedSnapshot, session]);
+
+  const handleSelectSnapshot = useCallback(
+    async (snapshot: SnapshotMeta | null) => {
+      setSelectedSnapshot(snapshot);
+      setSnapshotText(null);
+      if (!snapshot || !projectRef.current) return;
+      try {
+        setSnapshotText(await historyRead(projectRef.current.path, snapshot.id));
+      } catch (err) {
+        setBanner({ kind: "error", text: t("error.history", { message: errorMessage(err) }) });
+      }
+    },
+    [t]
+  );
+
+  const handleRestoreSnapshot = useCallback(
+    async (snapshot: SnapshotMeta) => {
+      const manager = managerRef.current;
+      const current = projectRef.current;
+      if (!manager || !current) return;
+      try {
+        const text = await historyRead(current.path, snapshot.id);
+        lastAutoSnapshotRef.current = 0; // force a safety snapshot of what we are replacing
+        await recordSnapshot();
+        manager.replaceText(text);
+        setSelectedSnapshot(null);
+        setSnapshotText(null);
+        setBanner({ kind: "info", text: t("history.restored") });
+      } catch (err) {
+        setBanner({ kind: "error", text: t("error.history", { message: errorMessage(err) }) });
+      }
+    },
+    [recordSnapshot, t]
+  );
+
+  const handleDeleteSnapshot = useCallback(
+    async (snapshot: SnapshotMeta) => {
+      const current = projectRef.current;
+      if (!current) return;
+      try {
+        setSnapshots(await historyDelete(current.path, snapshot.id));
+        if (selectedSnapshot?.id === snapshot.id) {
+          setSelectedSnapshot(null);
+          setSnapshotText(null);
+        }
+      } catch (err) {
+        setBanner({ kind: "error", text: t("error.history", { message: errorMessage(err) }) });
+      }
+    },
+    [selectedSnapshot, t]
+  );
+
+  // ─── Open / create project ──────────────────────────────────────
+  const openProject = useCallback(
+    async (folder: string, mainFile?: string | null) => {
+      const data = await readProject(folder, mainFile);
+
+      // Snapshot + flush the previous session before tearing it down.
+      if (managerRef.current) {
+        lastAutoSnapshotRef.current = 0;
+        await recordSnapshot();
+        await managerRef.current.dispose();
+        managerRef.current = null;
+      }
+
+      const manager = new CollabManager({
+        projectPath: data.project_path,
+        mainFile: data.main_file,
+        isCollab: data.is_collab,
+        roomId: data.room_id,
+        initialTexContent: data.tex_content,
+        initialCrdtState: data.crdt_state,
+        currentUser: currentUserRef.current,
+        callbacks: {
+          onModeChange: setMode,
+          onHostChange: setIsHost,
+          onPeersChange: setPeers,
+          onStatusChange: (status, diag) => {
+            setConnectionStatus(status);
+            setDiagnostics(diag);
+          },
+          onRoomIdChange: setRoomId,
+          onSaveStateChange: setSaveState,
+        },
+      });
+      managerRef.current = manager;
+
+      const info = { path: data.project_path, mainFile: data.main_file, texFiles: data.tex_files };
+      projectRef.current = info;
+      setProject(info);
+      setSession({
+        key: `${data.project_path}::${data.main_file}::${Date.now()}`,
+        ytext: manager.ytext,
+        awareness: manager.awareness,
+      });
+      setMode(manager.mode);
+      setRoomId(manager.roomId);
+      setIsHost(manager.isHost);
+      setPeers(manager.peers);
+      setConnectionStatus(manager.status);
+      setDiagnostics(manager.diagnostics);
+      setSaveState(manager.saveState);
+      setCompile(EMPTY_COMPILE);
+      lastCompiledRef.current = null;
+      setPageCount(null);
+      setBanner(null);
+      setSelectedSnapshot(null);
+      setSnapshotText(null);
+      lastAutoSnapshotRef.current = Date.now();
+      setActivePanel((p) => (p === "join" || p === "new" ? null : p));
+      setRecents(addRecent({ path: data.project_path, mainFile: data.main_file }));
+      void refreshSnapshots(data.project_path);
+    },
+    [recordSnapshot, refreshSnapshots]
+  );
 
   const handleOpenFolder = useCallback(async () => {
     try {
@@ -292,7 +457,7 @@ function App() {
       await openProject(folder);
     } catch (err) {
       console.error("Failed to open project:", err);
-      setBanner(t("error.openProject", { message: errorMessage(err) }));
+      setBanner({ kind: "error", text: t("error.openProject", { message: errorMessage(err) }) });
     }
   }, [openProject, t]);
 
@@ -302,8 +467,23 @@ function App() {
         await openProject(recent.path, recent.mainFile);
       } catch (err) {
         console.error("Failed to open recent project:", err);
-        setBanner(t("error.openProject", { message: errorMessage(err) }));
+        setBanner({ kind: "error", text: t("error.openProject", { message: errorMessage(err) }) });
         setRecents(removeRecent(recent.path));
+      }
+    },
+    [openProject, t]
+  );
+
+  const handleCreateProject = useCallback(
+    async (parentDir: string, name: string, templateId: string) => {
+      const template = findTemplate(templateId);
+      if (!template) return;
+      try {
+        const path = await createProject(parentDir, name, template.files);
+        await openProject(path);
+      } catch (err) {
+        console.error("Failed to create project:", err);
+        setBanner({ kind: "error", text: t("error.createProject", { message: errorMessage(err) }) });
       }
     },
     [openProject, t]
@@ -312,14 +492,45 @@ function App() {
   const handleOpenFolderRef = useRef(handleOpenFolder);
   handleOpenFolderRef.current = handleOpenFolder;
 
-  // Global shortcuts: ⌘S / Ctrl+S build, ⌘O / Ctrl+O open.
+  // ─── UI zoom ────────────────────────────────────────────────────
+  const setZoom = useCallback((updater: (z: number) => number) => {
+    setUiZoom((z) => {
+      const next = Math.round(Math.min(UI_ZOOM_MAX, Math.max(UI_ZOOM_MIN, updater(z))) * 100) / 100;
+      try {
+        localStorage.setItem(UI_ZOOM_KEY, String(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  }, []);
+
+  // Global shortcuts: ⌘S build, ⌘O open, ⌥/⌘ +/−/0 UI zoom.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
+      const primary = e.metaKey || e.ctrlKey;
+      if (primary || e.altKey) {
+        // Match by physical key (US layout) and by produced character, so the
+        // shortcut works on Spanish/ISO layouts and with Option dead keys.
+        const zoomIn =
+          e.code === "Equal" ||
+          e.code === "NumpadAdd" ||
+          (e.altKey && e.code === "BracketRight") || // "+" key on ISO (Spanish) layouts
+          ["+", "=", "≠", "±"].includes(e.key);
+        const zoomOut = e.code === "Minus" || e.code === "NumpadSubtract" || ["-", "_", "–", "—"].includes(e.key);
+        const zoomReset = e.code === "Digit0" || e.code === "Numpad0" || e.key === "0";
+        if (zoomIn || zoomOut || zoomReset) {
+          e.preventDefault();
+          if (zoomReset) setZoom(() => 1);
+          else setZoom((z) => z + (zoomIn ? UI_ZOOM_STEP : -UI_ZOOM_STEP));
+          return;
+        }
+      }
+      if (!primary || e.shiftKey || e.altKey) return;
       const key = e.key.toLowerCase();
       if (key === "s") {
         e.preventDefault();
-        void runCompileRef.current();
+        void runCompile();
       } else if (key === "o") {
         e.preventDefault();
         void handleOpenFolderRef.current();
@@ -327,7 +538,7 @@ function App() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [runCompile, setZoom]);
 
   const handleSelectMainFile = useCallback(
     async (file: string) => {
@@ -336,7 +547,7 @@ function App() {
         await openProject(project.path, file);
       } catch (err) {
         console.error("Failed to switch root file:", err);
-        setBanner(t("error.openProject", { message: errorMessage(err) }));
+        setBanner({ kind: "error", text: t("error.openProject", { message: errorMessage(err) }) });
       }
     },
     [project, openProject, t]
@@ -351,7 +562,7 @@ function App() {
       setActivePanel("room");
     } catch (err) {
       console.error("Failed to start collaboration:", err);
-      setBanner(t("error.collab", { message: errorMessage(err) }));
+      setBanner({ kind: "error", text: t("error.collab", { message: errorMessage(err) }) });
     }
   }, [t]);
 
@@ -366,7 +577,7 @@ function App() {
         setActivePanel("room");
       } catch (err) {
         console.error("Failed to join room:", err);
-        setBanner(t("error.join", { message: errorMessage(err) }));
+        setBanner({ kind: "error", text: t("error.join", { message: errorMessage(err) }) });
       }
     },
     [openProject, t]
@@ -403,7 +614,7 @@ function App() {
       await exportPdf(compile.pdfPath, `${stem}.pdf`);
     } catch (err) {
       console.error("Failed to export PDF:", err);
-      setBanner(t("error.export", { message: errorMessage(err) }));
+      setBanner({ kind: "error", text: t("error.export", { message: errorMessage(err) }) });
     }
   }, [compile.pdfPath, project, t]);
 
@@ -411,11 +622,15 @@ function App() {
     editorRef.current?.goToLine(line);
   }, []);
 
-  const togglePanel = useCallback((panel: PanelId) => {
-    setActivePanel((current) => (current === panel ? null : panel));
-  }, []);
+  const togglePanel = useCallback(
+    (panel: PanelId) => {
+      setActivePanel((current) => (current === panel ? null : panel));
+      if (panel === "history" && projectRef.current) void refreshSnapshots(projectRef.current.path);
+    },
+    [refreshSnapshots]
+  );
 
-  // ─── Window lifecycle: flush before close, cleanup on unmount ──
+  // ─── Window lifecycle: snapshot + flush before close, cleanup on unmount ──
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     let closing = false;
@@ -423,6 +638,15 @@ function App() {
       if (closing) return;
       closing = true;
       try {
+        if (managerRef.current && projectRef.current) {
+          await historySave(
+            projectRef.current.path,
+            projectRef.current.mainFile,
+            managerRef.current.getText(),
+            null,
+            currentUserRef.current.name
+          ).catch((err) => console.error("history_save on close failed:", err));
+        }
         await managerRef.current?.dispose();
         managerRef.current = null;
       } finally {
@@ -458,6 +682,21 @@ function App() {
   } else if (activePanel === "join") {
     panelTitle = t("join.title");
     panelContent = <JoinPanel onJoin={handleJoinRoom} />;
+  } else if (activePanel === "new") {
+    panelTitle = t("new.title");
+    panelContent = <NewProjectPanel defaultParent={defaultParent} onPickParent={pickParentFolder} onCreate={handleCreateProject} />;
+  } else if (activePanel === "history" && project) {
+    panelTitle = t("history.title");
+    panelContent = (
+      <HistoryPanel
+        snapshots={snapshots}
+        selectedId={selectedSnapshot?.id ?? null}
+        onSaveVersion={(label) => void recordSnapshot(label)}
+        onSelect={(s) => void handleSelectSnapshot(s)}
+        onRestore={(s) => void handleRestoreSnapshot(s)}
+        onDelete={(s) => void handleDeleteSnapshot(s)}
+      />
+    );
   } else if (activePanel === "profile") {
     panelTitle = t("profile.title");
     panelContent = <ProfilePanel currentUser={currentUser} onUserChange={handleUserChange} onNewWindow={handleNewWindow} />;
@@ -465,8 +704,16 @@ function App() {
   const effectivePanel: PanelId | null = panelContent ? activePanel : null;
 
   // ─── Render ─────────────────────────────────────────────────────
+  const zoomed = Math.abs(uiZoom - 1) > 0.001;
   return (
-    <div className="h-screen flex bg-mk-bg text-mk-fg overflow-hidden">
+    <div
+      className="flex bg-mk-bg text-mk-fg overflow-hidden"
+      style={
+        zoomed
+          ? { width: `${100 / uiZoom}vw`, height: `${100 / uiZoom}vh`, transform: `scale(${uiZoom})`, transformOrigin: "0 0" }
+          : { width: "100vw", height: "100vh" }
+      }
+    >
       <Sidebar
         hasProject={project !== null}
         mode={mode}
@@ -505,12 +752,18 @@ function App() {
           pageCount={pageCount}
           autoCompile={autoCompile}
           isCompiling={isCompiling}
+          uiZoom={uiZoom}
+          onResetZoom={() => setZoom(() => 1)}
           onSelectMainFile={handleSelectMainFile}
         />
 
         {banner && (
-          <div className="flex items-center justify-between px-4 py-1.5 bg-mk-red/15 border-b border-mk-red/40 text-xs text-mk-fg shrink-0">
-            <span className="truncate">{banner}</span>
+          <div
+            className={`flex items-center justify-between px-4 py-1.5 text-xs text-mk-fg shrink-0 border-b ${
+              banner.kind === "error" ? "bg-mk-red/15 border-mk-red/40" : "bg-mk-green/15 border-mk-green/40"
+            }`}
+          >
+            <span className="truncate">{banner.text}</span>
             <button onClick={() => setBanner(null)} className="ml-3 text-mk-fg3 hover:text-mk-fg cursor-pointer">
               {t("action.close")}
             </button>
@@ -521,20 +774,31 @@ function App() {
           <SplitPane
             left={<LatexEditor key={session.key} ref={editorRef} ytext={session.ytext} awareness={session.awareness} />}
             right={
-              <PdfPreview
-                pdfData={compile.pdfData}
-                pdfVersion={compile.pdfVersion}
-                logs={compile.logs}
-                diagnostics={compile.diagnostics}
-                summary={compile.summary}
-                fatalError={compile.fatalError}
-                isCompiling={isCompiling}
-                canExport={Boolean(compile.pdfPath)}
-                mainFile={project?.mainFile ?? null}
-                onJumpToLine={handleJumpToLine}
-                onExport={handleExport}
-                onPageCount={setPageCount}
-              />
+              selectedSnapshot ? (
+                <DiffView
+                  snapshot={selectedSnapshot}
+                  snapshotText={snapshotText}
+                  currentText={currentText}
+                  onRestore={() => void handleRestoreSnapshot(selectedSnapshot)}
+                  onClose={() => void handleSelectSnapshot(null)}
+                />
+              ) : (
+                <PdfPreview
+                  pdfData={compile.pdfData}
+                  pdfVersion={compile.pdfVersion}
+                  logs={compile.logs}
+                  diagnostics={compile.diagnostics}
+                  summary={compile.summary}
+                  fatalError={compile.fatalError}
+                  isCompiling={isCompiling}
+                  quietCompile={compileQuiet}
+                  canExport={Boolean(compile.pdfPath)}
+                  mainFile={project?.mainFile ?? null}
+                  onJumpToLine={handleJumpToLine}
+                  onExport={handleExport}
+                  onPageCount={setPageCount}
+                />
+              )
             }
           />
         ) : (
@@ -544,6 +808,7 @@ function App() {
               compilerMissing={compilerInfo !== null && compilerInfo.name === null}
               compilerHint={compilerHint}
               onOpenFolder={handleOpenFolder}
+              onNew={() => setActivePanel("new")}
               onJoin={() => setActivePanel("join")}
               onOpenRecent={handleOpenRecent}
               onRemoveRecent={(path) => setRecents(removeRecent(path))}

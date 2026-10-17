@@ -212,6 +212,50 @@ pub fn read_project(project_path: &str, preferred_main: Option<&str>) -> Result<
     })
 }
 
+/// A file to write when scaffolding a new project (path relative to the project).
+#[derive(Deserialize, Clone, Debug)]
+pub struct ProjectFile {
+    pub path: String,
+    pub content: String,
+}
+
+fn valid_project_name(name: &str) -> bool {
+    let trimmed = name.trim();
+    !trimmed.is_empty()
+        && trimmed.len() <= 120
+        && !trimmed.starts_with('.')
+        && !trimmed.chars().any(|c| matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control())
+}
+
+/// Creates `<parent_dir>/<name>` with the given files (e.g. from a template) and
+/// returns the new project path. Refuses to touch an existing, non-empty folder.
+pub fn create_project(parent_dir: &str, name: &str, files: &[ProjectFile]) -> Result<String, String> {
+    let parent = PathBuf::from(parent_dir);
+    if !parent.is_dir() {
+        return Err(format!("Not a directory: {parent_dir}"));
+    }
+    if !valid_project_name(name) {
+        return Err(format!("Invalid project name: '{name}'"));
+    }
+    let name = name.trim();
+    let dir = parent.join(name);
+    if dir.exists() {
+        let non_empty = fs::read_dir(&dir).map(|mut d| d.next().is_some()).unwrap_or(true);
+        if non_empty {
+            return Err(format!("A non-empty folder named '{name}' already exists here"));
+        }
+    }
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create project folder: {e}"))?;
+    if !files.iter().any(|f| f.path.to_lowercase().ends_with(".tex")) {
+        return Err("A project needs at least one .tex file".to_string());
+    }
+    for file in files {
+        let path = resolve_inside(&dir, &file.path)?;
+        write_atomic(&path, file.content.as_bytes()).map_err(|e| format!("Failed to write {}: {e}", file.path))?;
+    }
+    Ok(dir.to_string_lossy().into_owned())
+}
+
 /// Atomically save the root TeX file. Returns whether bytes were actually written.
 pub fn save_tex(project_path: &str, main_file: &str, content: &str) -> Result<bool, String> {
     let dir = PathBuf::from(project_path);
@@ -336,6 +380,35 @@ mod tests {
         assert_eq!(proj.main_file, "paper.tex", "room.json must override the main.tex default");
         assert!(proj.tex_content.ends_with("paper"));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn create_project_scaffolds_files_and_rejects_bad_input() {
+        let parent = temp_project("create_parent");
+        let files = vec![
+            ProjectFile { path: "main.tex".into(), content: "\\documentclass{article}\\begin{document}x\\end{document}".into() },
+            ProjectFile { path: "chapters/intro.tex".into(), content: "intro".into() },
+            ProjectFile { path: "refs.bib".into(), content: "@book{k, title={T}}".into() },
+        ];
+        let path = create_project(parent.to_str().unwrap(), "  My Thesis ", &files).unwrap();
+        let dir = PathBuf::from(&path);
+        assert_eq!(dir.file_name().unwrap(), "My Thesis");
+        assert_eq!(fs::read_to_string(dir.join("chapters/intro.tex")).unwrap(), "intro");
+        let opened = read_project(&path, None).unwrap();
+        assert_eq!(opened.main_file, "main.tex");
+        assert_eq!(opened.tex_files, vec!["chapters/intro.tex", "main.tex"]);
+
+        // Existing non-empty folder, bad names, escaping paths, no .tex file.
+        assert!(create_project(parent.to_str().unwrap(), "My Thesis", &files).is_err());
+        for bad in ["", "   ", ".hidden", "a/b", "a\\b", "x:y"] {
+            assert!(create_project(parent.to_str().unwrap(), bad, &files).is_err(), "{bad:?} must be rejected");
+        }
+        let escaping = vec![ProjectFile { path: "../evil.tex".into(), content: "x".into() }];
+        assert!(create_project(parent.to_str().unwrap(), "Evil", &escaping).is_err());
+        let no_tex = vec![ProjectFile { path: "notes.txt".into(), content: "x".into() }];
+        assert!(create_project(parent.to_str().unwrap(), "NoTex", &no_tex).is_err());
+        assert!(create_project("/definitely/missing/dir", "X", &files).is_err());
+        let _ = fs::remove_dir_all(&parent);
     }
 
     #[test]

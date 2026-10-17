@@ -47,6 +47,8 @@ interface PdfPreviewProps {
   /** Infrastructure error (no compiler, IPC failure…), distinct from LaTeX errors. */
   fatalError: string | null;
   isCompiling: boolean;
+  /** Hide the "compiling" overlay (automatic background builds). */
+  quietCompile?: boolean;
   canExport: boolean;
   mainFile: string | null;
   onJumpToLine: (line: number) => void;
@@ -73,6 +75,7 @@ export default function PdfPreview({
   summary,
   fatalError,
   isCompiling,
+  quietCompile = false,
   canExport,
   mainFile,
   onJumpToLine,
@@ -301,7 +304,7 @@ export default function PdfPreview({
       </div>
 
       {/* Loading overlay during compilation */}
-      {isCompiling && (
+      {isCompiling && !quietCompile && (
         <div className="absolute inset-x-0 top-8 z-20 flex justify-center pointer-events-none">
           <div className="mt-3 flex items-center gap-2 px-3 py-1.5 bg-mk-bg2/95 border border-mk-bg3 text-xs text-mk-fg2 shadow-lg">
             <Loader2 size={14} className="animate-spin text-mk-yellow" />

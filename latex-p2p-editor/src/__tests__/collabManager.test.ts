@@ -283,6 +283,21 @@ describe("Solo mode persistence", () => {
   });
 });
 
+describe("Restoring a version", () => {
+  it("replaceText applies minimal edits, marks the doc dirty and saves like a normal edit", async () => {
+    const { manager, saveStates } = makeManager();
+    const restored = TEX.replace("Shared project", "Restored content");
+    const ops = manager.replaceText(restored);
+    expect(ops).toBeGreaterThan(0);
+    expect(manager.getText()).toBe(restored);
+    expect(saveStates.at(-1)?.status).toBe("dirty");
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(tauriBridge.saveTexAtomic).toHaveBeenCalledWith("/path/to/project", "main.tex", restored);
+    expect(manager.replaceText(restored)).toBe(0);
+    manager.destroy();
+  });
+});
+
 describe("Solo ⇄ Collab transitions", () => {
   it("hot-attaches a provider without losing the document and tears it down cleanly", async () => {
     const { manager } = makeManager();

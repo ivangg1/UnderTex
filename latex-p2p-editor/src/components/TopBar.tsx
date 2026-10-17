@@ -24,6 +24,8 @@ interface TopBarProps {
   pageCount: number | null;
   autoCompile: boolean;
   isCompiling: boolean;
+  uiZoom: number;
+  onResetZoom: () => void;
   onSelectMainFile: (file: string) => void;
 }
 
@@ -48,6 +50,8 @@ export default function TopBar({
   pageCount,
   autoCompile,
   isCompiling,
+  uiZoom,
+  onResetZoom,
   onSelectMainFile,
 }: TopBarProps) {
   const { t } = useI18n();
@@ -154,7 +158,23 @@ export default function TopBar({
         </span>
       )}
 
+      {/* Zoom (only when not 100 %) */}
+      {Math.abs(uiZoom - 1) > 0.001 && (
+        <button
+          onClick={onResetZoom}
+          className={`${ITEM} text-mk-fg3 hover:text-mk-fg cursor-pointer`}
+          title={t("zoom.level", { percent: Math.round(uiZoom * 100) })}
+        >
+          <span className="font-mono">{Math.round(uiZoom * 100)}%</span>
+        </button>
+      )}
+
       {/* Last build */}
+      {isCompiling && (
+        <span className={`${ITEM} text-mk-fg3`}>
+          <Loader2 size={12} className="animate-spin" />
+        </span>
+      )}
       {summary && (
         <span className={`${ITEM} ${summary.success ? "" : "text-mk-red"}`} title={t("topbar.lastBuild")}>
           <span className="font-mono">{(summary.durationMs / 1000).toFixed(1)}s</span>

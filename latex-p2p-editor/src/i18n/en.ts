@@ -177,6 +177,48 @@ export const en = {
   "topbar.autoOn": "auto",
   "topbar.manual": "manual",
 
+  // ─── New project ────────────────────────────────────────────────
+  "rail.new": "New",
+  "new.title": "New project",
+  "new.name": "Project name",
+  "new.name.placeholder": "my-paper",
+  "new.template": "Template",
+  "new.location": "Location",
+  "new.location.pick": "Choose folder…",
+  "new.location.help": "The project is created as a subfolder here.",
+  "new.create": "Create and open",
+  "template.blank": "Blank",
+  "template.blank.desc": "Just a document skeleton.",
+  "template.article": "Article",
+  "template.article.desc": "Sections, equations, figures and a BibTeX bibliography.",
+  "template.report": "Report / thesis",
+  "template.report.desc": "Chapters in separate files with \\input, table of contents, bibliography.",
+  "template.beamer": "Presentation (beamer)",
+  "template.beamer.desc": "Slides with the metropolis theme.",
+  "error.createProject": "Could not create the project: {message}",
+
+  // ─── History ────────────────────────────────────────────────────
+  "rail.history": "History",
+  "history.title": "Version history",
+  "history.help": "Versions are stored on this computer, outside the project folder. Automatic snapshots are taken as you save; named versions are kept forever.",
+  "history.saveVersion": "Save version",
+  "history.label.placeholder": "Label (e.g. submitted draft)",
+  "history.empty": "No versions yet.",
+  "history.auto": "auto",
+  "history.restore": "Restore",
+  "history.delete": "Delete version",
+  "history.compare": "Compare with current",
+  "history.current": "Current",
+  "history.diff.title": "{label} · {time}",
+  "history.diff.stats": "+{added} / −{removed} lines",
+  "history.diff.identical": "Identical to the current document.",
+  "history.restored": "Version restored. A snapshot of the previous content was saved.",
+  "history.bytes": "{kb} KB",
+  "error.history": "History error: {message}",
+
+  // ─── Zoom ───────────────────────────────────────────────────────
+  "zoom.level": "UI zoom {percent}% · click to reset (⌥0)",
+
   // ─── Errors ─────────────────────────────────────────────────────
   "error.openProject": "Could not open the project: {message}",
   "error.join": "Could not join the room: {message}",

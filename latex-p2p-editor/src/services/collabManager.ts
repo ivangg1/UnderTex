@@ -22,6 +22,7 @@ import { WebrtcProvider } from "y-webrtc";
 import { Awareness, removeAwarenessStates } from "y-protocols/awareness";
 import { saveTexAtomic, saveProjectState, initCollabProject } from "./tauriBridge";
 import { seedDocFromText, TEXT_KEY } from "./crdtSeed";
+import { applyTextDiff } from "./textDiff";
 
 export type CollabMode = "solo" | "collab";
 
@@ -279,6 +280,15 @@ export class CollabManager {
   /** Current document text. */
   public getText(): string {
     return this.ytext.toString();
+  }
+
+  /**
+   * Replaces the whole document (e.g. restoring a version) with minimal edit
+   * operations in one transaction, so peers merge it like any other edit.
+   * Returns the number of operations applied.
+   */
+  public replaceText(next: string): number {
+    return applyTextDiff(this.ytext, next, "restore");
   }
 
   /** Updates local awareness state with the user's name and color. */
