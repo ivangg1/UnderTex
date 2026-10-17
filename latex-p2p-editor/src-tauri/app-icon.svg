@@ -1,0 +1,23 @@
+<svg id="logoSvg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="1024" height="1024">
+      <defs>
+        <linearGradient id="paperBg" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stop-color="#FAF9F5"/>
+          <stop offset="100%" stop-color="#E4E2DA"/>
+        </linearGradient>
+        <linearGradient id="topShard" x1="122" y1="104" x2="338" y2="368" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stop-color="#111113"/>
+          <stop offset="100%" stop-color="#27272A"/>
+        </linearGradient>
+        <linearGradient id="underShard" x1="192" y1="148" x2="404" y2="412" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stop-color="#71717A"/>
+          <stop offset="100%" stop-color="#A1A1AA"/>
+        </linearGradient>
+        <filter id="shardShadow" x="-10%" y="-10%" width="130%" height="130%">
+          <feDropShadow dx="4" dy="8" stdDeviation="6" flood-color="#000000" flood-opacity="0.18"/>
+        </filter>
+      </defs>
+      <rect x="32" y="32" width="448" height="448" rx="100" fill="url(#paperBg)" stroke="#D0CEC4" stroke-width="4"/>
+      <polygon points="376,148 404,312 192,412 252,248" fill="url(#underShard)"/>
+      <polygon points="338,104 122,188 134,368 292,282" fill="url(#topShard)" filter="url(#shardShadow)"/>
+      <line x1="218" y1="234" x2="292" y2="308" stroke="#111113" stroke-width="14" stroke-linecap="round"/>
+    </svg>
