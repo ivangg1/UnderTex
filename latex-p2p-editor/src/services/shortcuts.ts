@@ -18,7 +18,8 @@ export type ShortcutAction =
   | "prevTab"
   | "zoomIn"
   | "zoomOut"
-  | "zoomReset";
+  | "zoomReset"
+  | "syncPdf";
 
 export interface KeyLike {
   key: string;
@@ -64,6 +65,8 @@ export function matchShortcut(e: KeyLike, mac: boolean): ShortcutAction | null {
         return "viewHistory";
       case "l":
         return "viewOutline";
+      case "j":
+        return "syncPdf";
       default:
         return null;
     }
@@ -107,6 +110,7 @@ export function shortcutLabel(action: ShortcutAction, mac: boolean): string {
     zoomIn: `${mod}+`,
     zoomOut: `${mod}−`,
     zoomReset: `${mod}0`,
+    syncPdf: `${mod}${shift}J`,
   };
   return map[action];
 }

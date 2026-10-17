@@ -5,6 +5,7 @@
 //! * [`compiler`] – cross-platform engine discovery and the cached local compile pipeline.
 //! * [`assets`]   – project asset listing (path, size, SHA-256) and the per-room cache of
 //!   files received from peers.
+//! * [`synctex`]  – SyncTeX parsing: PDF position ↔ project file and line.
 //! * [`fsutil`]   – atomic writes and path validation.
 
 mod assets;
@@ -13,6 +14,7 @@ mod compiler;
 mod fsutil;
 mod history;
 mod project;
+mod synctex;
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -375,6 +377,35 @@ async fn compile_latex(
     .map_err(|e| format!("Compile task panicked: {e}"))?
 }
 
+/// SyncTeX inverse search: the project file and line typeset at `(x, y)` (PDF
+/// points from the top-left corner) of `page` in the last build of `main_file`.
+#[tauri::command]
+async fn synctex_edit(
+    project_path: String,
+    main_file: String,
+    page: u32,
+    x: f64,
+    y: f64,
+) -> Result<Option<synctex::SourceLocation>, String> {
+    tauri::async_runtime::spawn_blocking(move || synctex::edit(&project_path, &main_file, page, x, y))
+        .await
+        .map_err(|e| format!("SyncTeX task panicked: {e}"))?
+}
+
+/// SyncTeX forward search: page and boxes where `file:line` (project-relative)
+/// was typeset in the last build of `main_file`.
+#[tauri::command]
+async fn synctex_view(
+    project_path: String,
+    main_file: String,
+    file: String,
+    line: u32,
+) -> Result<Option<synctex::PdfLocation>, String> {
+    tauri::async_runtime::spawn_blocking(move || synctex::view(&project_path, &main_file, &file, line))
+        .await
+        .map_err(|e| format!("SyncTeX task panicked: {e}"))?
+}
+
 /// Returns the raw bytes of a file inside the build cache (e.g. the compiled PDF)
 /// as a binary IPC response, avoiding JSON-encoding megabytes of numbers.
 #[tauri::command]
@@ -466,6 +497,8 @@ pub fn run() {
             save_project_state,
             detect_compiler,
             compile_latex,
+            synctex_edit,
+            synctex_view,
             read_build_file,
             asset_list,
             asset_read_chunk,

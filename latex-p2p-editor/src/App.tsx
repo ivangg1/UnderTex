@@ -53,7 +53,10 @@ import {
   type CompileOutput,
   type CompilerInfo,
   type SnapshotMeta,
+  synctexEdit,
+  synctexView,
 } from "./services/tauriBridge";
+import type { SynctexTarget } from "./services/synctex";
 import { findIncludes } from "./services/chapters";
 import {
   DEFAULT_BUILD_SETTINGS,
@@ -281,6 +284,8 @@ function App() {
   const [isCompiling, setIsCompiling] = useState(false);
   const [compileQuiet, setCompileQuiet] = useState(false);
   const [compile, setCompile] = useState<CompileState>(EMPTY_COMPILE);
+  const compileRef = useRef(compile);
+  compileRef.current = compile;
   const [pageCount, setPageCount] = useState<number | null>(null);
   const [autoCompile, setAutoCompileState] = useState<boolean>(() => {
     try {
@@ -747,6 +752,50 @@ function App() {
     if (target === activeFileRef.current && editorRef.current) editorRef.current.goToLine(line);
     else void openFileRef.current(target, line);
   }, []);
+
+  // ─── SyncTeX: PDF ⇄ source ──────────────────────────────────────
+  const [syncTarget, setSyncTarget] = useState<(SynctexTarget & { seq: number }) | null>(null);
+  const syncSeqRef = useRef(0);
+
+  /** Forward search: scrolls the PDF to the cursor of the open file and flashes it. */
+  const syncToPdf = useCallback(async () => {
+    const current = projectRef.current;
+    const file = activeFileRef.current;
+    const editor = editorRef.current;
+    if (!current || !file || !editor || !compileRef.current.pdfPath) return;
+    const line = editor.getCursorLine();
+    try {
+      const target = await synctexView(current.path, current.rootFile, file, line);
+      if (!target) {
+        setBanner({ kind: "info", text: t("synctex.notInPdf", { file, line }) });
+        return;
+      }
+      setSyncTarget({ ...target, seq: ++syncSeqRef.current });
+    } catch (err) {
+      setBanner({ kind: "error", text: t("synctex.error", { message: errorMessage(err) }) });
+    }
+  }, [t]);
+  const syncToPdfRef = useRef(syncToPdf);
+  syncToPdfRef.current = syncToPdf;
+
+  /** Inverse search: ⌘/Ctrl-click on the PDF opens the source line. */
+  const syncToSource = useCallback(
+    async (page: number, x: number, y: number) => {
+      const current = projectRef.current;
+      if (!current) return;
+      try {
+        const source = await synctexEdit(current.path, current.rootFile, page, x, y);
+        if (!source) {
+          setBanner({ kind: "info", text: t("synctex.noSource") });
+          return;
+        }
+        goTo(source.file, source.line);
+      } catch (err) {
+        setBanner({ kind: "error", text: t("synctex.error", { message: errorMessage(err) }) });
+      }
+    },
+    [goTo, t]
+  );
 
   // The editor of a freshly opened file is mounted: apply a pending jump.
   useEffect(() => {
@@ -1324,6 +1373,10 @@ function App() {
         case "viewHistory":
           if (hasProject) showPanel("history");
           break;
+        case "syncPdf":
+          if (!hasProject) return;
+          void syncToPdfRef.current();
+          break;
         case "nextTab":
           cycleTab(1);
           break;
@@ -1698,6 +1751,10 @@ function App() {
                     problemsRequest={problemsRequest}
                     onExport={() => void handleExport()}
                     onPageCount={setPageCount}
+                    onSyncClick={(page, x, y) => void syncToSource(page, x, y)}
+                    onSyncToCursor={session && session.path === activeFile ? () => void syncToPdf() : undefined}
+                    syncShortcut={shortcutLabel("syncPdf", MAC)}
+                    syncTarget={syncTarget}
                   />
                 )
               }

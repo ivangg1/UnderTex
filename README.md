@@ -64,6 +64,13 @@ compile limits.
   document and restore with minimal edits (peers merge it like any edit).
 - **PDF preview** with pdf.js: keeps scroll and zoom across builds, lazy page
   rendering, export.
+- **SyncTeX navigation**: `⌘`-click (`Ctrl`-click) anywhere in the PDF opens
+  the file and line that produced it, also in `\input`/`\include`d chapters
+  and nested root files. `⌘⇧J` (`Ctrl+Shift+J`) or the crosshair button in the
+  PDF toolbar scrolls the PDF to the cursor and briefly highlights the typeset
+  lines. Both engines run with SyncTeX on; the `.synctex.gz` stays in the build
+  cache and is parsed by the backend, which maps build-cache paths back to
+  project paths.
 - **Multi-file editing**: a project file tree (folders, per-type icons for
   `.tex`, `.bib`, `.sty`/`.cls`, images and PDFs, the root file marked with a
   crown) with create / rename / delete and *Set as main file*. Text files open
@@ -105,6 +112,8 @@ compile limits.
 | Toggle side panel | `⌘B` | `Ctrl+B` |
 | Files / Outline / History view | `⌘⇧E` / `⌘⇧L` / `⌘⇧H` | `Ctrl+Shift+E` / `L` / `H` |
 | Next / previous tab | `⌃Tab` / `⌃⇧Tab` | `Ctrl+Tab` / `Ctrl+Shift+Tab` |
+| Show cursor position in the PDF | `⌘⇧J` | `Ctrl+Shift+J` |
+| Open the source of a PDF spot | `⌘`-click | `Ctrl`-click |
 | Export PDF | `⌘E` | `Ctrl+E` |
 | Open folder | `⌘O` | `Ctrl+O` |
 | UI zoom | `⌘`/`⌥` `+` `−` `0` | `Ctrl`/`Alt` `+` `−` `0` |
@@ -163,7 +172,7 @@ latex-p2p-editor/
 │   │   ├── Welcome.tsx         # start, recent projects, how it works
 │   │   ├── SplitPane.tsx       # draggable editor | PDF divider
 │   │   ├── LatexEditor.tsx     # CodeMirror 6 + y-codemirror.next (collaborative undo), Monokai theme
-│   │   └── PdfPreview.tsx      # pdf.js viewer + clickable error list
+│   │   └── PdfPreview.tsx      # pdf.js viewer, clickable error list, SyncTeX click + highlight
 │   ├── i18n/                   # en/es dictionaries and the useI18n hook
 │   ├── services/
 │   │   ├── collabManager.ts    # Y.Doc, WebrtcProvider (encrypted signaling, STUN/TURN), awareness, host election, persistence
@@ -172,6 +181,7 @@ latex-p2p-editor/
 │   │   ├── latexLog.ts         # tectonic / pdflatex log parser
 │   │   ├── chapters.ts         # \include detection, chapter at the cursor
 │   │   ├── buildMode.ts        # build scope / draft / preamble → BuildOptions
+│   │   ├── synctex.ts          # PDF points ⇄ on-screen pixels for SyncTeX clicks, highlight and scroll
 │   │   ├── textDiff.ts         # minimal-edit replacement (restore) and line diffs
 │   │   ├── templates.ts        # project templates
 │   │   ├── recents.ts          # recent projects (localStorage)
@@ -182,6 +192,7 @@ latex-p2p-editor/
 │   ├── project.rs              # root .tex detection, .texcollab/, atomic saves, project scaffolding
 │   ├── history.rs              # version history store (app data dir)
 │   ├── compiler.rs             # engine discovery, build cache (+ room asset cache), timeout, chapter/draft/preamble rewrites
+│   ├── synctex.rs              # .synctex.gz parser, PDF ⇄ source search, build-cache → project paths
 │   ├── assets.rs               # shareable file listing (SHA-256), chunk reads, per-room asset cache
 │   └── fsutil.rs               # write_atomic, path validation
 ├── examples/demo-project/      # sample project
@@ -320,9 +331,9 @@ installs. [`ci.yml`](.github/workflows/ci.yml) runs vitest, the build and
 
 ```bash
 cd latex-p2p-editor
-npm test                 # vitest: CRDT seed, parser, CollabManager, multi-file collaboration, outline, quick open, shortcuts, file tree, asset sync protocol, encrypted signaling, STUN/TURN, i18n, templates, diffs, chapters, build modes
+npm test                 # vitest: CRDT seed, parser, CollabManager, multi-file collaboration, outline, quick open, shortcuts, file tree, asset sync protocol, encrypted signaling, STUN/TURN, i18n, templates, diffs, chapters, build modes, SyncTeX mapping
 npm run build            # tsc + vite
 
 cd src-tauri
-cargo test               # project (tree, file ops, binary previews), history, fsutil, assets (listing, cache), compiler: editor overrides, room-cache merge, includeonly/draft/preamble rewrites, format cache, real chapter builds
+cargo test               # project (tree, file ops, binary previews), history, fsutil, assets (listing, cache), compiler: editor overrides, room-cache merge, includeonly/draft/preamble rewrites, format cache, real chapter builds, SyncTeX parser (tectonic/pdflatex fixtures) and a real nested-root build searched both ways
 ```

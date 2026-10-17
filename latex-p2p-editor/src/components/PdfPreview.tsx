@@ -16,6 +16,7 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  Crosshair,
   Download,
   FileText,
   Loader2,
@@ -28,8 +29,11 @@ import {
 import type { LatexDiagnostic } from "../services/latexLog";
 import type { PreambleStatus } from "../services/tauriBridge";
 import { useI18n } from "../i18n";
+import { clientToPdfPoint, isSyncClick, pdfRectToCss, scrollForRect, type SynctexTarget } from "../services/synctex";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+
+const isMac = typeof navigator !== "undefined" && /Mac|iPod|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 
 export interface CompileSummary {
   success: boolean;
@@ -69,7 +73,18 @@ interface PdfPreviewProps {
   problemsRequest?: number;
   onExport: () => void;
   onPageCount?: (count: number | null) => void;
+  /** ⌘/Ctrl-click on a page: inverse search at `(x, y)` PDF points of `page`. */
+  onSyncClick?: (page: number, x: number, y: number) => void;
+  /** Toolbar button: show the editor's cursor position in the PDF. */
+  onSyncToCursor?: () => void;
+  /** Tooltip shortcut of the sync button (e.g. "⌘⇧J"). */
+  syncShortcut?: string;
+  /** Forward-search result to scroll to and flash; `seq` changes on every request. */
+  syncTarget?: (SynctexTarget & { seq: number }) | null;
 }
+
+/** How long the forward-search highlight stays on screen. */
+const FLASH_MS = 1600;
 
 type ZoomMode = { kind: "fit" } | { kind: "manual"; scale: number };
 
@@ -100,6 +115,10 @@ export default function PdfPreview({
   problemsRequest = 0,
   onExport,
   onPageCount,
+  onSyncClick,
+  onSyncToCursor,
+  syncShortcut = "",
+  syncTarget = null,
 }: PdfPreviewProps) {
   const { t } = useI18n();
   const [showLogs, setShowLogs] = useState(false);
@@ -271,6 +290,39 @@ export default function PdfPreview({
     else pageRefs.current.delete(pageNumber);
   }, []);
 
+  // ─── SyncTeX ────────────────────────────────────────────────────
+  const [flash, setFlash] = useState<(SynctexTarget & { seq: number }) | null>(null);
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!syncTarget || !doc || !container) return;
+    const holder = pageRefs.current.get(syncTarget.page);
+    if (!holder) return;
+    const pageRect = holder.getBoundingClientRect();
+    const box = container.getBoundingClientRect();
+    const next = scrollForRect(
+      syncTarget,
+      scale,
+      { top: pageRect.top - box.top + container.scrollTop, left: pageRect.left - box.left + container.scrollLeft },
+      { width: container.clientWidth, height: container.clientHeight, scrollLeft: container.scrollLeft }
+    );
+    container.scrollTo({ top: next.top, left: next.left, behavior: "smooth" });
+    setFlash(syncTarget);
+    const id = setTimeout(() => setFlash((f) => (f?.seq === syncTarget.seq ? null : f)), FLASH_MS);
+    return () => clearTimeout(id);
+    // Only a new request scrolls; zoom changes just re-place the highlight.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncTarget?.seq, doc]);
+
+  const handlePageClick = (pageNumber: number, e: React.MouseEvent<HTMLDivElement>) => {
+    if (!onSyncClick || !isSyncClick(e, isMac)) return;
+    const dims = pageDims[pageNumber - 1];
+    if (!dims) return;
+    const point = clientToPdfPoint(e.clientX, e.clientY, e.currentTarget.getBoundingClientRect(), dims);
+    if (!point) return;
+    e.preventDefault();
+    onSyncClick(pageNumber, point.x, point.y);
+  };
+
   const zoomBy = (factor: number) =>
     setZoom({ kind: "manual", scale: Math.max(MIN_SCALE, Math.min(MAX_SCALE, scale * factor)) });
 
@@ -280,7 +332,6 @@ export default function PdfPreview({
   const hasDrawer = Boolean(logs || fatalError);
   const jumpTarget = (d: LatexDiagnostic): string | null => (d.line !== undefined ? resolveFile(d) : null);
 
-  const isMac = typeof navigator !== "undefined" && /Mac|iPod|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
   const shortcutLabel = isMac ? "⌘S" : "Ctrl+S";
 
   return (
@@ -312,6 +363,16 @@ export default function PdfPreview({
         >
           <Maximize2 size={14} />
         </button>
+        {onSyncToCursor && (
+          <button
+            onClick={onSyncToCursor}
+            disabled={!doc}
+            className="p-1.5 hover:bg-mk-bg3 hover:text-mk-fg disabled:opacity-40 cursor-pointer"
+            title={t("preview.sync.tip", { shortcut: syncShortcut, click: isMac ? "⌘" : "Ctrl" })}
+          >
+            <Crosshair size={14} />
+          </button>
+        )}
         {doc && <span className="ml-2 text-mk-fg4">{doc.numPages === 1 ? t("preview.page") : t("preview.pages", { count: doc.numPages })}</span>}
         <div className="flex-1" />
         {summary && !isCompiling && (
@@ -376,9 +437,19 @@ export default function PdfPreview({
                   key={`${pdfVersion}-${pageNumber}`}
                   ref={(el) => setPageRef(pageNumber, el)}
                   data-page={pageNumber}
-                  className="bg-white shadow-lg shadow-black/50"
+                  className="relative bg-white shadow-lg shadow-black/50"
                   style={{ width: Math.floor(dims.width * scale), height: Math.floor(dims.height * scale) }}
-                />
+                  onClick={(e) => handlePageClick(pageNumber, e)}
+                >
+                  {flash?.page === pageNumber &&
+                    flash.boxes.map((b, i) => (
+                      <div
+                        key={`${flash.seq}-${i}`}
+                        className="synctex-flash absolute pointer-events-none z-10"
+                        style={pdfRectToCss(b, scale)}
+                      />
+                    ))}
+                </div>
               );
             })}
           </div>
