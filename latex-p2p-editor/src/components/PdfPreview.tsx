@@ -61,8 +61,12 @@ interface PdfPreviewProps {
   canExport: boolean;
   hasProject?: boolean;
   onCompile?: () => void;
-  mainFile: string | null;
-  onJumpToLine: (line: number) => void;
+  /** Project file a diagnostic points at (`null`: not a project file, e.g. a system package). */
+  resolveFile: (diagnostic: LatexDiagnostic) => string | null;
+  /** Opens `file` at `line` (another tab when it is not the open file). */
+  onJump: (file: string, line: number) => void;
+  /** Bumped to expand the problems list (status bar counter). */
+  problemsRequest?: number;
   onExport: () => void;
   onPageCount?: (count: number | null) => void;
 }
@@ -91,14 +95,21 @@ export default function PdfPreview({
   canExport,
   hasProject = true,
   onCompile,
-  mainFile,
-  onJumpToLine,
+  resolveFile,
+  onJump,
+  problemsRequest = 0,
   onExport,
   onPageCount,
 }: PdfPreviewProps) {
   const { t } = useI18n();
   const [showLogs, setShowLogs] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(true);
+  useEffect(() => {
+    if (problemsRequest > 0) {
+      setShowDiagnostics(true);
+      setShowLogs(false);
+    }
+  }, [problemsRequest]);
   const [zoom, setZoom] = useState<ZoomMode>({ kind: "fit" });
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null);
   const [pageDims, setPageDims] = useState<PageDims[]>([]);
@@ -267,8 +278,7 @@ export default function PdfPreview({
   const errors = diagnostics.filter((d) => d.severity === "error");
   const warnings = diagnostics.filter((d) => d.severity === "warning");
   const hasDrawer = Boolean(logs || fatalError);
-  const canJump = (d: LatexDiagnostic) =>
-    d.line !== undefined && (d.file === undefined || d.file === mainFile || `./${d.file}` === mainFile);
+  const jumpTarget = (d: LatexDiagnostic): string | null => (d.line !== undefined ? resolveFile(d) : null);
 
   const isMac = typeof navigator !== "undefined" && /Mac|iPod|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
   const shortcutLabel = isMac ? "⌘S" : "Ctrl+S";
@@ -443,24 +453,25 @@ export default function PdfPreview({
           {showDiagnostics && diagnostics.length > 0 && !showLogs && (
             <ul className="overflow-auto text-xs divide-y divide-mk-bg3/60">
               {diagnostics.map((d, i) => {
-                const jumpable = canJump(d);
+                const target = jumpTarget(d);
+                const jumpable = target !== null;
                 return (
                   <li key={i}>
                     <button
-                      onClick={() => jumpable && d.line !== undefined && onJumpToLine(d.line)}
+                      onClick={() => target !== null && d.line !== undefined && onJump(target, d.line)}
                       disabled={!jumpable}
                       className={`w-full flex items-start gap-2 px-3 py-1.5 text-left ${
                         jumpable ? "hover:bg-mk-bg3/50 cursor-pointer" : "cursor-default"
                       }`}
-                      title={jumpable ? t("preview.jump") : undefined}
+                      title={jumpable ? t("preview.jumpTo", { file: target ?? "", line: d.line ?? 0 }) : undefined}
                     >
                       {d.severity === "error" ? (
                         <AlertCircle size={13} className="text-mk-red mt-0.5 shrink-0" />
                       ) : (
                         <AlertTriangle size={13} className="text-mk-orange mt-0.5 shrink-0" />
                       )}
-                      <span className="font-mono text-mk-fg4 shrink-0 w-24 truncate">
-                        {d.file ? `${d.file}` : ""}
+                      <span className="font-mono text-mk-fg4 shrink-0 w-32 truncate" title={target ?? d.file}>
+                        {target ?? d.file ?? ""}
                         {d.line !== undefined ? `:${d.line}` : ""}
                       </span>
                       <span className="text-mk-fg2 break-words">{d.message}</span>

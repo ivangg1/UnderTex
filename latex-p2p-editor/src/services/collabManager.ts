@@ -29,6 +29,12 @@
 //   any handshake; a peer that never answers would otherwise show
 //   "Connected" and block the host's saves. Such half-open connections are
 //   destroyed after a handshake timeout.
+// * Multi-file: every project text file opened by any peer gets its own
+//   top-level Y.Text ("file:<relative path>"); the root file keeps the legacy
+//   "codemirror" key so peers on older versions still meet in the same text.
+//   The `files` map is the room's registry of shared files. The host writes
+//   each changed file atomically, serialized with the root file and the CRDT
+//   state.
 
 import * as Y from "yjs";
 import { WebrtcProvider } from "y-webrtc";
@@ -39,6 +45,7 @@ import { Awareness, removeAwarenessStates } from "y-protocols/awareness";
 import {
   saveTexAtomic,
   saveProjectState,
+  saveProjectFile,
   initCollabProject,
   assetList,
   assetCacheList,
@@ -54,7 +61,7 @@ import {
   type AssetIO,
   type AssetSyncStatus,
 } from "./assetSync";
-import { seedDocFromText, TEXT_KEY } from "./crdtSeed";
+import { isPristineText, seedDocFromText, seedTextUnderKey, TEXT_KEY } from "./crdtSeed";
 import { applyTextDiff } from "./textDiff";
 
 export type CollabMode = "solo" | "collab";
@@ -71,6 +78,20 @@ export interface PeerInfo {
   color: string;
   isHost: boolean;
   isSelf: boolean;
+  /** Project file the peer has open (relative path), when it publishes one. */
+  file?: string;
+}
+
+/** Prefix of the Y.Text key of every project file but the primary one. */
+export const FILE_TEXT_PREFIX = "file:";
+/** Y.Map registry of the files shared as text in the room: path → {by}. */
+export const FILES_KEY = "files";
+
+const PRIMARY_ORIGIN = "primary-file";
+
+export interface SharedFileEntry {
+  /** clientID of the peer that shared the file first. */
+  by: number;
 }
 
 /**
@@ -132,6 +153,8 @@ export interface CollabCallbacks {
 export interface RoomInfo {
   cloud?: { provider: string; account: string | null };
   hostName?: string;
+  /** File compiled as root by the room (set with "Set as main file"). */
+  rootFile?: string;
 }
 
 export interface CollabOptions {
@@ -351,6 +374,7 @@ interface AwarenessUserState {
 interface AwarenessState {
   user?: AwarenessUserState;
   peerId?: string;
+  file?: string;
 }
 
 type Unsubscribe = () => void;
@@ -391,7 +415,16 @@ export class CollabManager {
   public readonly doc: Y.Doc;
   /** Replicated room metadata; see [`RoomInfo`]. */
   public readonly meta: Y.Map<RoomInfo[keyof RoomInfo]>;
+  /** Text of the primary file (`primaryFile`). */
   public readonly ytext: Y.Text;
+  /** Registry of the project files shared as text; see [`FILES_KEY`]. */
+  public readonly files: Y.Map<SharedFileEntry>;
+  /**
+   * File whose content lives under the legacy `TEXT_KEY`: the root file when the
+   * room was created (recorded in the doc), else the opened root file. It never
+   * changes for the lifetime of a document, even when another root is chosen.
+   */
+  public readonly primaryFile: string;
   public readonly awareness: Awareness;
   public provider: WebrtcProvider | null = null;
   public mode: CollabMode = "solo";
@@ -411,7 +444,6 @@ export class CollabManager {
   public assets: AssetSyncStatus = EMPTY_ASSET_STATUS;
 
   private readonly projectPath: string;
-  private readonly mainFile: string;
   private currentUser: CollabUser;
   private readonly callbacks?: CollabCallbacks;
   private readonly saveDebounceMs: number;
@@ -429,6 +461,13 @@ export class CollabManager {
 
   private isDestroyed = false;
   private dirty = false;
+  /** Files changed since the last save; `dirtyAll` writes every shared file. */
+  private dirtyPaths = new Set<string>();
+  private dirtyAll = false;
+  private undoManagers = new Map<string, Y.UndoManager>();
+  private ready: Promise<void> = Promise.resolve();
+  private resolveReady: (() => void) | null = null;
+  private readyTimer: ReturnType<typeof setTimeout> | null = null;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   private saveInFlight: Promise<void> | null = null;
   private synced = false;
@@ -442,7 +481,6 @@ export class CollabManager {
 
   constructor(config: CollabSessionConfig) {
     this.projectPath = config.projectPath;
-    this.mainFile = config.mainFile;
     this.currentUser = config.currentUser;
     this.callbacks = config.callbacks;
     this.roomId = config.roomId ?? null;
@@ -458,6 +496,7 @@ export class CollabManager {
 
     this.doc = new Y.Doc();
     this.ytext = this.doc.getText(TEXT_KEY);
+    this.files = this.doc.getMap<SharedFileEntry>(FILES_KEY);
     this.meta = this.doc.getMap<RoomInfo[keyof RoomInfo]>("meta");
     this.meta.observe(this.handleMetaChange);
     this.awareness = new Awareness(this.doc);
@@ -469,6 +508,8 @@ export class CollabManager {
         console.error("CollabManager: failed to apply persisted CRDT state:", err);
       }
     }
+    const recorded = this.meta.get("primaryFile");
+    this.primaryFile = typeof recorded === "string" && recorded ? recorded : config.mainFile;
 
     const startCollab = config.isCollab && Boolean(config.roomId);
     if (this.ytext.length === 0 && config.initialTexContent) {
@@ -500,8 +541,10 @@ export class CollabManager {
     const info: RoomInfo = {};
     const cloud = this.meta.get("cloud") as RoomInfo["cloud"] | undefined;
     const hostName = this.meta.get("hostName") as string | undefined;
+    const rootFile = this.meta.get("rootFile") as string | undefined;
     if (cloud) info.cloud = cloud;
     if (hostName) info.hostName = hostName;
+    if (rootFile) info.rootFile = rootFile;
     return info;
   }
 
@@ -539,6 +582,120 @@ export class CollabManager {
     return applyTextDiff(this.ytext, next, "restore");
   }
 
+  // ─── Project files ────────────────────────────────────────────────
+
+  /** Y.Text key of a project file. */
+  public textKeyFor(path: string): string {
+    return path === this.primaryFile ? TEXT_KEY : `${FILE_TEXT_PREFIX}${path}`;
+  }
+
+  /** The (possibly still empty) shared text of a project file. */
+  public fileText(path: string): Y.Text {
+    return path === this.primaryFile ? this.ytext : this.doc.getText(this.textKeyFor(path));
+  }
+
+  /** Whether the room shares `path` as text (the primary file always is). */
+  public isShared(path: string): boolean {
+    return path === this.primaryFile || this.files.has(path);
+  }
+
+  /** Paths of every file shared as text, the primary one first. */
+  public sharedFiles(): string[] {
+    const others = Array.from(this.files.keys()).filter((p) => p !== this.primaryFile).sort();
+    return [this.primaryFile, ...others];
+  }
+
+  /**
+   * Current text of a shared file, or `null` when the room has no content for
+   * it (not shared, or not received yet).
+   */
+  public getFileText(path: string): string | null {
+    if (!this.isShared(path)) return null;
+    const ytext = this.fileText(path);
+    return isPristineText(ytext) ? null : ytext.toString();
+  }
+
+  /** In-memory content of every shared file, for builds (path → text). */
+  public fileContents(): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const path of this.sharedFiles()) {
+      const text = this.getFileText(path);
+      if (text !== null) out[path] = text;
+    }
+    return out;
+  }
+
+  /**
+   * Opens a project file for editing and returns its shared text. In a room the
+   * swarm's content wins: the file is seeded from `diskText` only when nobody
+   * shared it yet, after the initial sync (or the seed wait) so a joining peer
+   * never duplicates text it is about to receive. Seeding is deterministic, so
+   * two peers seeding the same content converge to one copy.
+   */
+  public async openFile(path: string, diskText: string | null): Promise<Y.Text> {
+    if (path === this.primaryFile) return this.ytext;
+    await this.ready;
+    const ytext = this.fileText(path);
+    if (this.isDestroyed) return ytext;
+    const registered = this.files.has(path);
+    this.doc.transact(() => {
+      if (isPristineText(ytext)) {
+        if (diskText) seedTextUnderKey(this.doc, this.textKeyFor(path), diskText);
+      } else if (!registered && diskText !== null && ytext.toString() !== diskText) {
+        // Left over from a file that was deleted or renamed away: the disk wins.
+        applyTextDiff(ytext, diskText, "reload");
+      }
+      if (!registered) this.files.set(path, { by: this.doc.clientID });
+    }, "open-file");
+    return ytext;
+  }
+
+  /**
+   * Follows a rename on disk: the new path is shared with the old content and
+   * the old one leaves the registry (its text stays as a tombstone).
+   */
+  public renameFile(oldPath: string, newPath: string): void {
+    if (oldPath === this.primaryFile || !this.files.has(oldPath)) return;
+    const content = this.fileText(oldPath).toString();
+    this.doc.transact(() => {
+      this.files.delete(oldPath);
+      const next = this.fileText(newPath);
+      if (isPristineText(next)) seedTextUnderKey(this.doc, this.textKeyFor(newPath), content);
+      else applyTextDiff(next, content, "reload");
+      this.files.set(newPath, { by: this.doc.clientID });
+    }, "rename-file");
+    this.dirtyPaths.delete(oldPath);
+  }
+
+  /** Stops sharing a deleted file: nobody writes it back to disk afterwards. */
+  public removeFile(path: string): void {
+    if (path === this.primaryFile) return;
+    this.dirtyPaths.delete(path);
+    if (this.files.has(path)) this.doc.transact(() => this.files.delete(path), "remove-file");
+  }
+
+  /** Per-file undo history, kept across tab switches. */
+  public undoManagerFor(path: string): Y.UndoManager {
+    let manager = this.undoManagers.get(path);
+    if (!manager) {
+      manager = new Y.UndoManager(this.fileText(path));
+      this.undoManagers.set(path, manager);
+    }
+    return manager;
+  }
+
+  /** Publishes the file this user is looking at (shown next to peers and tabs). */
+  public setActiveFile(path: string | null): void {
+    if (this.isDestroyed) return;
+    this.awareness.setLocalStateField("file", path ?? undefined);
+  }
+
+  /** Shares the root file choice with the room (any peer may change it). */
+  public setRootFile(path: string): void {
+    if (this.meta.get("rootFile") === path) return;
+    this.doc.transact(() => this.meta.set("rootFile", path), "room-info");
+  }
+
   /** Re-reads the project folder and the asset cache now (collab mode only). */
   public rescanAssets(): Promise<void> {
     return this.assetSync?.rescan() ?? Promise.resolve();
@@ -558,10 +715,10 @@ export class CollabManager {
     if (this.mode === "collab" && this.roomId) {
       return this.roomId;
     }
-    const meta = await initCollabProject(this.projectPath, this.mainFile, null);
+    const meta = await initCollabProject(this.projectPath, this.primaryFile, null);
     this.roomId = meta.room_id;
     this.mode = "collab";
-    this.dirty = true;
+    this.markAllDirty();
     await this.flushSave();
     this.callbacks?.onModeChange?.("collab");
     this.callbacks?.onRoomIdChange?.(this.roomId);
@@ -576,7 +733,7 @@ export class CollabManager {
     this.enterSoloState();
     this.callbacks?.onModeChange?.("solo");
     this.callbacks?.onRoomIdChange?.(null);
-    this.dirty = true;
+    this.markAllDirty();
     await this.flushSave();
   }
 
@@ -627,6 +784,9 @@ export class CollabManager {
       this.saveTimer = null;
     }
     this.clearSeedTimer();
+    this.settleReady();
+    for (const manager of this.undoManagers.values()) manager.destroy();
+    this.undoManagers.clear();
     try {
       this.teardownProvider();
       this.doc.off("update", this.handleDocUpdate);
@@ -644,6 +804,7 @@ export class CollabManager {
   private enterSoloState(): void {
     this.mode = "solo";
     this.synced = true;
+    this.settleReady();
     this.remotePeerIds.clear();
     this.setHost(true, { flush: false });
     this.peers = [];
@@ -664,6 +825,12 @@ export class CollabManager {
     this.synced = false;
     this.remotePeerIds.clear();
     this.connectStartedAt = Date.now();
+    // Files opened from now on wait for the swarm's state before seeding.
+    this.settleReady();
+    this.ready = new Promise<void>((resolve) => {
+      this.resolveReady = resolve;
+    });
+    this.readyTimer = setTimeout(() => this.settleReady(), this.seedWaitMs);
 
     const iceServers = this.iceServersOverride ?? getIceServers();
     this.turnConfigured = hasTurnServer(iceServers);
@@ -691,6 +858,7 @@ export class CollabManager {
       this.synced = event.synced;
       if (event.synced) {
         this.startAssetSync();
+        this.settleReady();
         this.clearSeedTimer();
         if (this.ytext.length > 0) {
           this.pendingSeed = null;
@@ -793,7 +961,7 @@ export class CollabManager {
     const sync = new AssetSync({
       doc: this.doc,
       awareness: this.awareness,
-      io: this.assetIoOverride ?? tauriAssetIo(this.projectPath, this.mainFile, roomId),
+      io: this.assetIoOverride ?? tauriAssetIo(this.projectPath, this.primaryFile, roomId),
       maxBytes: this.assetMaxBytes ?? readAssetMaxBytes(),
       scanIntervalMs: this.assetScanMs,
       onChange: (status) => {
@@ -914,6 +1082,28 @@ export class CollabManager {
 
   // ─── Seeding ──────────────────────────────────────────────────────
 
+  /** Resolves pending `openFile` calls (synced, seed wait over, solo or destroyed). */
+  private settleReady(): void {
+    if (this.readyTimer) {
+      clearTimeout(this.readyTimer);
+      this.readyTimer = null;
+    }
+    const resolve = this.resolveReady;
+    this.resolveReady = null;
+    resolve?.();
+  }
+
+  /**
+   * Records which file `TEXT_KEY` belongs to, for whoever loads this doc later.
+   * Written right before a collab save, so it is persisted without being an
+   * edit of its own (no extra save).
+   */
+  private recordPrimaryFile(): void {
+    if (this.meta.get("primaryFile") === undefined) {
+      this.doc.transact(() => this.meta.set("primaryFile", this.primaryFile), PRIMARY_ORIGIN);
+    }
+  }
+
   private applySeedIfPending(): void {
     if (this.pendingSeed === null) return;
     const text = this.pendingSeed;
@@ -984,13 +1174,15 @@ export class CollabManager {
     this.setHost(CollabManager.computeIsHost(active, this.doc.clientID), { flush: true });
 
     this.peers = active.map((clientID) => {
-      const user = (states.get(clientID) as AwarenessState | undefined)?.user ?? {};
+      const state = states.get(clientID) as AwarenessState | undefined;
+      const user = state?.user ?? {};
       return {
         clientID,
         name: user.name || "",
         color: user.color || "#3b82f6",
         isHost: clientID === hostID,
         isSelf: clientID === this.doc.clientID,
+        ...(typeof state?.file === "string" ? { file: state.file } : {}),
       };
     });
     this.callbacks?.onPeersChange?.(this.peers);
@@ -1003,7 +1195,7 @@ export class CollabManager {
     if (next) {
       // Promoted: consolidate the CRDT on disk right away, the old host may have
       // died with unsaved changes queued.
-      this.dirty = true;
+      this.markAllDirty();
       if (opts.flush) {
         void this.flushSave();
       }
@@ -1061,12 +1253,30 @@ export class CollabManager {
     if (this.isDestroyed) return;
     // File transfers are not edits: no main.tex rewrite for them.
     if (tr && isAssetOnlyTransaction(this.doc, tr)) return;
+    if (tr?.origin === PRIMARY_ORIGIN) return;
+    if (tr) this.collectDirtyPaths(tr);
     this.dirty = true;
     if (this.canSave()) {
       this.scheduleSave();
     }
     this.emitSaveState();
   };
+
+  private markAllDirty(): void {
+    this.dirty = true;
+    this.dirtyAll = true;
+  }
+
+  /** Maps the texts a transaction changed back to project paths. */
+  private collectDirtyPaths(tr: Y.Transaction): void {
+    const names = new Map<unknown, string>();
+    this.doc.share.forEach((type, name) => names.set(type, name));
+    for (const type of tr.changed.keys()) {
+      const name = names.get(type);
+      if (name === TEXT_KEY) this.dirtyPaths.add(this.primaryFile);
+      else if (name?.startsWith(FILE_TEXT_PREFIX)) this.dirtyPaths.add(name.slice(FILE_TEXT_PREFIX.length));
+    }
+  }
 
   /**
    * Only the host writes, and in collab mode only once it holds the swarm's
@@ -1098,28 +1308,44 @@ export class CollabManager {
     if (!this.dirty || !this.canSave()) {
       return Promise.resolve();
     }
+    const all = this.dirtyAll;
+    const paths = new Set(this.dirtyPaths);
     this.dirty = false;
+    this.dirtyAll = false;
+    this.dirtyPaths.clear();
     this.saveState = { ...this.saveState, status: "saving", error: null };
     this.emitSaveState();
 
-    const text = this.ytext.toString();
-    const write =
-      this.mode === "solo"
-        ? saveTexAtomic(this.projectPath, this.mainFile, text)
-        : saveProjectState(
-            this.projectPath,
-            this.mainFile,
-            text,
-            Array.from(Y.encodeStateAsUpdate(this.doc))
-          );
+    // Other shared files first (each one atomically), then the primary file and,
+    // in a room, the CRDT state that covers all of them. A file nobody has
+    // content for (not received yet) or that left the registry is never written.
+    const others = (all ? this.sharedFiles() : Array.from(paths))
+      .filter((p) => p !== this.primaryFile && this.files.has(p))
+      .map((p) => ({ path: p, text: this.getFileText(p) }))
+      .filter((f): f is { path: string; text: string } => f.text !== null);
+    const writePrimary = all || paths.has(this.primaryFile);
+    const write = async () => {
+      for (const file of others) {
+        await saveProjectFile(this.projectPath, file.path, file.text);
+      }
+      const text = this.ytext.toString();
+      if (this.mode === "solo") {
+        if (writePrimary || others.length === 0) await saveTexAtomic(this.projectPath, this.primaryFile, text);
+      } else {
+        this.recordPrimaryFile();
+        await saveProjectState(this.projectPath, this.primaryFile, text, Array.from(Y.encodeStateAsUpdate(this.doc)));
+      }
+    };
 
-    this.saveInFlight = write
+    this.saveInFlight = write()
       .then(() => {
         this.saveState = { status: "saved", lastSavedAt: Date.now(), error: null };
       })
       .catch((err: unknown) => {
         console.error("CollabManager: save failed:", err);
         this.dirty = true;
+        if (all) this.dirtyAll = true;
+        paths.forEach((p) => this.dirtyPaths.add(p));
         this.saveState = {
           ...this.saveState,
           status: "error",

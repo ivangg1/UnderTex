@@ -1,289 +1,280 @@
-// Top status bar: project breadcrumb + root file, and live status on the right
-// (mode, connection, save state, compiler, last build).
+// Top bar: where you are and what you do next.
+// Left: project menu (new / open / join / recent / new window) and the root
+// file. Right: the build options and the three primary actions — Build (with
+// the auto-build switch), Share and Export. Live status lives in StatusBar.
 
+import { useEffect, useRef, useState } from "react";
 import {
-  AlertTriangle,
   BookOpen,
-  Check,
-  ChevronRight,
+  ChevronDown,
   Cloud,
   Crown,
+  Download,
   Feather,
+  FilePlus,
   FolderOpen,
-  Laptop,
   Layers,
   Loader2,
-  Save,
-  User,
+  LogIn,
+  AppWindow,
+  Play,
+  Search,
+  Share2,
   Users,
   Zap,
   ZapOff,
 } from "lucide-react";
 import { useI18n } from "../i18n";
-import type { CollabMode, ConnectionStatus, PeerInfo, SaveState } from "../services/collabManager";
-import type { CloudLocation, CompilerInfo } from "../services/tauriBridge";
+import type { CollabMode, ConnectionStatus } from "../services/collabManager";
+import type { CloudLocation } from "../services/tauriBridge";
 import { cloudLabel, isCloud } from "../services/cloud";
 import { chapterScope, scopeChapter, type BuildScope, type BuildSettings } from "../services/buildMode";
-import type { CompileSummary } from "./PdfPreview";
+import { folderName, type RecentProject } from "../services/recents";
+import { shortcutLabel } from "../services/shortcuts";
 import { connectionLabel } from "./ConnectionBadge";
-import { folderName } from "../services/recents";
 
 interface TopBarProps {
+  mac: boolean;
   projectPath: string | null;
-  /** Cloud sync client of the project folder, shown in the breadcrumb tooltip. */
   cloud: CloudLocation | null;
-  mainFile: string | null;
-  texFiles: string[];
+  rootFile: string | null;
+  recents: RecentProject[];
   mode: CollabMode;
   isHost: boolean;
-  peers: PeerInfo[];
+  peerCount: number;
   connectionStatus: ConnectionStatus;
-  saveState: SaveState;
-  compilerInfo: CompilerInfo | null;
-  compilerHint: string | null;
-  summary: CompileSummary | null;
-  pageCount: number | null;
-  autoCompile: boolean;
   isCompiling: boolean;
+  autoCompile: boolean;
+  compilerName: string | null;
   /** Chapters the root file `\include`s (the scope control is hidden without them). */
   chapters: string[];
   buildSettings: BuildSettings;
+  buildTitle: string;
+  canExport: boolean;
   onChangeScope: (scope: BuildScope) => void;
   onToggleDraft: () => void;
   onTogglePreamble: () => void;
-  uiZoom: number;
-  onResetZoom: () => void;
-  onSelectMainFile: (file: string) => void;
+  onCompile: () => void;
+  onToggleAuto: () => void;
+  onExport: () => void;
+  onShare: () => void;
+  onOpenRoot: () => void;
+  onQuickOpen: () => void;
+  onNewProject: () => void;
+  onOpenFolder: () => void;
+  onJoin: () => void;
+  onOpenRecent: (recent: RecentProject) => void;
+  onNewWindow: () => void;
 }
 
-function formatTime(ts: number): string {
-  return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
+const SEP = "w-px self-stretch my-2 bg-mk-bg3";
 
-const ITEM = "flex items-center gap-1.5 px-2.5 h-full border-l border-mk-bg3";
-
-export default function TopBar({
-  projectPath,
-  cloud,
-  mainFile,
-  texFiles,
-  mode,
-  isHost,
-  peers,
-  connectionStatus,
-  saveState,
-  compilerInfo,
-  compilerHint,
-  summary,
-  pageCount,
-  autoCompile,
-  isCompiling,
-  chapters,
-  buildSettings,
-  onChangeScope,
-  onToggleDraft,
-  onTogglePreamble,
-  uiZoom,
-  onResetZoom,
-  onSelectMainFile,
-}: TopBarProps) {
+export default function TopBar(props: TopBarProps) {
   const { t } = useI18n();
-  const conn = connectionLabel(connectionStatus, t);
-  const compilerMissing = compilerInfo !== null && compilerInfo.name === null;
+  const { projectPath, cloud, rootFile, mode, buildSettings, chapters, isCompiling, mac } = props;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const conn = connectionLabel(props.connectionStatus, t);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = (e: MouseEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false);
+    };
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && setMenuOpen(false);
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", esc);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", esc);
+    };
+  }, [menuOpen]);
+
   const scopeActive = chapters.length > 0 && buildSettings.scope !== "full";
-  // A picked chapter that vanished from the root file shows as "full" in the control.
   const picked = scopeChapter(buildSettings.scope);
   const scopeValue: BuildScope = picked !== null && !chapters.includes(picked) ? "full" : buildSettings.scope;
-
-  let lastBuildBadge: string | null = null;
-  if (summary) {
-    const parts: string[] = [];
-    if (summary.mode === "chapter") parts.push(t("build.summary.chapter", { name: summary.chapter ?? "?" }));
-    else parts.push(t("build.summary.full"));
-    if (summary.draft) parts.push(t("build.badge.draft"));
-    if (summary.preamble === "reused" || summary.preamble === "created" || summary.preamble === "failed") {
-      parts.push(t(`build.badge.preamble.${summary.preamble}`));
-    }
-    lastBuildBadge = parts.join(" · ");
-  }
-
-  let save: { icon: React.ReactNode; text: string; cls: string; tip?: string } | null = null;
-  switch (saveState.status) {
-    case "guest":
-      save = { icon: <Cloud size={12} />, text: t("save.guest"), cls: "text-mk-fg3", tip: t("save.guest.tip") };
-      break;
-    case "saving":
-      save = { icon: <Loader2 size={12} className="animate-spin" />, text: t("save.saving"), cls: "text-mk-fg2" };
-      break;
-    case "dirty":
-      save = { icon: <Save size={12} />, text: t("save.dirty"), cls: "text-mk-orange", tip: t("save.dirty.tip") };
-      break;
-    case "error":
-      save = { icon: <AlertTriangle size={12} />, text: t("save.error"), cls: "text-mk-red", tip: saveState.error ?? undefined };
-      break;
-    case "saved": {
-      const time = saveState.lastSavedAt ? formatTime(saveState.lastSavedAt) : "";
-      save = { icon: <Check size={12} className="text-mk-green" />, text: t("save.saved", { time }), cls: "text-mk-fg3", tip: t("save.saved.tip", { time }) };
-      break;
-    }
-    default:
-      save = null;
-  }
+  const run = (fn: () => void) => () => {
+    setMenuOpen(false);
+    fn();
+  };
+  const menuItem = "w-full flex items-center gap-2.5 px-3 py-1.5 text-left text-mk-fg2 hover:bg-mk-bg3 hover:text-mk-fg cursor-pointer";
 
   return (
-    <header className="h-9 shrink-0 flex items-center bg-mk-bg2 border-b border-mk-bg3 text-[11px] text-mk-fg3 select-none">
-      {/* Breadcrumb */}
-      <div
-        className="flex items-center gap-1.5 px-3 h-full min-w-0"
-        title={projectPath ? (cloud ? `${cloudLabel(cloud, t)}\n${projectPath}` : projectPath) : undefined}
-      >
-        {isCloud(cloud) ? <Cloud size={13} className="shrink-0 text-mk-blue" /> : <FolderOpen size={13} className="shrink-0" />}
-        {projectPath ? (
-          <>
-            <span className="text-mk-fg2 font-medium truncate max-w-48">{folderName(projectPath)}</span>
-            <ChevronRight size={12} className="shrink-0 text-mk-fg4" />
-            {texFiles.length > 1 ? (
-              <select
-                value={mainFile ?? ""}
-                onChange={(e) => onSelectMainFile(e.target.value)}
-                disabled={mode === "collab" || isCompiling}
-                className="bg-transparent text-mk-fg font-mono text-[11px] focus:outline-none cursor-pointer disabled:cursor-not-allowed max-w-56 truncate"
-                title={mode === "collab" ? t("toolbar.rootFile.lockedTip") : t("toolbar.rootFile.tip")}
-              >
-                {texFiles.map((f) => (
-                  <option key={f} value={f}>
-                    {f}
-                  </option>
+    <header className="h-10 shrink-0 flex items-center gap-1 px-1.5 bg-mk-bg2 border-b border-mk-bg3 text-[11.5px] text-mk-fg3 select-none">
+      {/* Project menu */}
+      <div ref={menuRef} className="relative min-w-0">
+        <button
+          onClick={() => setMenuOpen((o) => !o)}
+          className="flex items-center gap-1.5 h-7 px-2 rounded hover:bg-mk-bg3 cursor-pointer min-w-0"
+          title={projectPath ? (cloud ? `${cloudLabel(cloud, t)}\n${projectPath}` : projectPath) : t("project.menu")}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+        >
+          {isCloud(cloud) ? <Cloud size={14} className="shrink-0 text-mk-blue" /> : <FolderOpen size={14} className="shrink-0 text-mk-yellow" />}
+          <span className="text-mk-fg font-semibold truncate max-w-52">{projectPath ? folderName(projectPath) : t("app.name")}</span>
+          <ChevronDown size={12} className="shrink-0" />
+        </button>
+        {menuOpen && (
+          <div role="menu" className="absolute left-0 top-8 z-40 w-72 py-1 bg-mk-bg2 border border-mk-bg3 shadow-2xl text-xs">
+            <button role="menuitem" className={menuItem} onClick={run(props.onNewProject)}>
+              <FilePlus size={14} /> {t("new.title")}
+            </button>
+            <button role="menuitem" className={menuItem} onClick={run(props.onOpenFolder)}>
+              <FolderOpen size={14} /> {t("project.openFolder")}
+              <span className="ml-auto text-mk-fg4">{shortcutLabel("open", mac)}</span>
+            </button>
+            <button role="menuitem" className={menuItem} onClick={run(props.onJoin)}>
+              <LogIn size={14} /> {t("join.title")}
+            </button>
+            <button role="menuitem" className={menuItem} onClick={run(props.onNewWindow)}>
+              <AppWindow size={14} /> {t("profile.newWindow")}
+            </button>
+            {props.recents.length > 0 && (
+              <>
+                <div className="mx-3 my-1 border-t border-mk-bg3" />
+                <div className="px-3 pt-1 pb-0.5 text-[10px] uppercase tracking-widest text-mk-fg4">{t("welcome.recent")}</div>
+                {props.recents.slice(0, 6).map((r) => (
+                  <button key={r.path} role="menuitem" className={menuItem} onClick={run(() => props.onOpenRecent(r))} title={r.path}>
+                    <FolderOpen size={13} className="text-mk-fg4" />
+                    <span className="truncate">{folderName(r.path)}</span>
+                    <span className="ml-auto text-mk-fg4 font-mono truncate max-w-28">{r.mainFile ?? ""}</span>
+                  </button>
                 ))}
-              </select>
-            ) : (
-              <span className="text-mk-fg font-mono truncate">{mainFile}</span>
+              </>
             )}
-          </>
-        ) : (
-          <span>{t("status.noProject")}</span>
+          </div>
         )}
       </div>
 
+      {/* Root file + quick open */}
+      {projectPath && rootFile && (
+        <>
+          <button
+            onClick={props.onOpenRoot}
+            className="flex items-center gap-1 h-7 px-2 rounded hover:bg-mk-bg3 hover:text-mk-fg cursor-pointer min-w-0"
+            title={t("topbar.root.tip")}
+          >
+            <Crown size={11} className="text-mk-yellow shrink-0" />
+            <span className="font-mono truncate max-w-48">{rootFile}</span>
+          </button>
+          <button
+            onClick={props.onQuickOpen}
+            className="hidden md:flex items-center gap-2 h-7 ml-2 px-2.5 min-w-40 rounded border border-mk-bg3 bg-mk-bg/60 text-mk-fg4 hover:text-mk-fg2 hover:border-mk-bg4 cursor-pointer"
+            title={t("quick.title")}
+          >
+            <Search size={12} />
+            <span>{t("topbar.search")}</span>
+            <span className="ml-auto font-mono text-[10px]">{shortcutLabel("quickOpen", mac)}</span>
+          </button>
+        </>
+      )}
+
       <div className="flex-1" />
 
-      {/* Mode */}
       {projectPath && (
-        <span
-          className={`${ITEM} ${mode === "collab" ? (isHost ? "text-mk-yellow" : "text-mk-blue") : ""}`}
-          title={mode === "collab" ? (isHost ? t("mode.host.tip") : t("mode.guest.tip")) : t("mode.solo.tip")}
-        >
-          {mode === "collab" ? (isHost ? <Crown size={12} /> : <User size={12} />) : <Laptop size={12} />}
-          {mode === "collab" ? (isHost ? t("mode.host") : t("mode.guest")) : t("mode.solo")}
-        </span>
-      )}
-
-      {/* Connection + peers */}
-      {mode === "collab" && (
-        <span className={`${ITEM} ${conn.textColor}`} title={conn.text}>
-          <span className={`w-2 h-2 rounded-full ${conn.dot}`} />
-          {conn.text}
-          <span className="flex items-center gap-0.5 text-mk-fg3 ml-1">
-            <Users size={12} />
-            {peers.length}
-          </span>
-        </span>
-      )}
-
-      {/* Save */}
-      {save && projectPath && (
-        <span className={`${ITEM} ${save.cls}`} title={save.tip}>
-          {save.icon}
-          {save.text}
-        </span>
-      )}
-
-      {/* Build scope: only for documents split with \include */}
-      {projectPath && chapters.length > 0 && (
-        <span className={`${ITEM} ${scopeActive ? "text-mk-blue" : ""}`} title={t("build.scope.tip")}>
-          <BookOpen size={12} className="shrink-0" />
-          <select
-            value={scopeValue}
-            onChange={(e) => onChangeScope(e.target.value as BuildScope)}
-            disabled={isCompiling}
-            className="bg-transparent text-[11px] focus:outline-none cursor-pointer disabled:cursor-not-allowed max-w-48 truncate"
+        <>
+          {/* Build options */}
+          {chapters.length > 0 && (
+            <label className={`flex items-center gap-1 h-7 px-2 rounded hover:bg-mk-bg3 ${scopeActive ? "text-mk-blue" : ""}`} title={t("build.scope.tip")}>
+              <BookOpen size={12} className="shrink-0" />
+              <select
+                value={scopeValue}
+                onChange={(e) => props.onChangeScope(e.target.value as BuildScope)}
+                disabled={isCompiling}
+                className="bg-transparent text-[11px] focus:outline-none cursor-pointer disabled:cursor-not-allowed max-w-40 truncate"
+              >
+                <option value="full">{t("build.scope.full")}</option>
+                <option value="cursor">{t("build.scope.cursor")}</option>
+                {chapters.map((c) => (
+                  <option key={c} value={chapterScope(c)}>
+                    {t("build.scope.chapter", { name: c })}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <button
+            onClick={props.onToggleDraft}
+            className={`flex items-center gap-1 h-7 px-2 rounded cursor-pointer hover:bg-mk-bg3 hover:text-mk-fg ${buildSettings.draft ? "text-mk-orange" : ""}`}
+            title={buildSettings.draft ? t("build.draft.on") : t("build.draft.off")}
+            aria-pressed={buildSettings.draft}
           >
-            <option value="full">{t("build.scope.full")}</option>
-            <option value="cursor">{t("build.scope.cursor")}</option>
-            {chapters.map((c) => (
-              <option key={c} value={chapterScope(c)}>
-                {t("build.scope.chapter", { name: c })}
-              </option>
-            ))}
-          </select>
-        </span>
-      )}
+            <Feather size={12} />
+            {t("build.draft")}
+          </button>
+          {props.compilerName === "pdflatex" && (
+            <button
+              onClick={props.onTogglePreamble}
+              className={`flex items-center gap-1 h-7 px-2 rounded cursor-pointer hover:bg-mk-bg3 hover:text-mk-fg ${buildSettings.precompiledPreamble ? "text-mk-green" : ""}`}
+              title={buildSettings.precompiledPreamble ? t("build.preamble.on") : t("build.preamble.off")}
+              aria-pressed={buildSettings.precompiledPreamble}
+            >
+              <Layers size={12} />
+              {t("build.preamble")}
+            </button>
+          )}
 
-      {/* Draft mode */}
-      {projectPath && (
-        <button
-          onClick={onToggleDraft}
-          className={`${ITEM} cursor-pointer hover:text-mk-fg ${buildSettings.draft ? "text-mk-orange" : ""}`}
-          title={buildSettings.draft ? t("build.draft.on") : t("build.draft.off")}
-          aria-pressed={buildSettings.draft}
-        >
-          <Feather size={12} />
-          {t("build.draft")}
-        </button>
-      )}
+          <span className={SEP} />
 
-      {/* Precompiled preamble (pdflatex only) */}
-      {projectPath && compilerInfo?.name === "pdflatex" && (
-        <button
-          onClick={onTogglePreamble}
-          className={`${ITEM} cursor-pointer hover:text-mk-fg ${buildSettings.precompiledPreamble ? "text-mk-green" : ""}`}
-          title={buildSettings.precompiledPreamble ? t("build.preamble.on") : t("build.preamble.off")}
-          aria-pressed={buildSettings.precompiledPreamble}
-        >
-          <Layers size={12} />
-          {t("build.preamble")}
-        </button>
-      )}
+          {/* Primary: Build (+ auto switch) */}
+          <div className="flex items-stretch h-7">
+            <button
+              onClick={props.onCompile}
+              disabled={isCompiling}
+              className="flex items-center gap-1.5 pl-2.5 pr-3 rounded-l bg-mk-green text-mk-bg2 font-semibold hover:brightness-110 cursor-pointer disabled:opacity-60 disabled:cursor-wait"
+              title={props.buildTitle}
+            >
+              {isCompiling ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} fill="currentColor" />}
+              {isCompiling ? t("toolbar.compiling") : t("rail.build")}
+            </button>
+            <button
+              onClick={props.onToggleAuto}
+              className={`flex items-center px-1.5 rounded-r border-l border-mk-bg2/40 cursor-pointer ${
+                props.autoCompile ? "bg-mk-green text-mk-bg2 hover:brightness-110" : "bg-mk-bg3 text-mk-fg3 hover:text-mk-fg"
+              }`}
+              title={props.autoCompile ? t("rail.auto.on") : t("rail.auto.off")}
+              aria-pressed={props.autoCompile}
+            >
+              {props.autoCompile ? <Zap size={12} fill="currentColor" /> : <ZapOff size={12} />}
+            </button>
+          </div>
 
-      {/* Compiler + auto/manual */}
-      {compilerInfo && (
-        <span
-          className={`${ITEM} ${compilerMissing ? "text-mk-red" : ""}`}
-          title={compilerMissing ? (compilerHint ?? undefined) : `${compilerInfo.version ?? compilerInfo.name}\n${compilerInfo.path ?? ""}`}
-        >
-          {compilerMissing ? <ZapOff size={12} /> : <Zap size={12} className={autoCompile ? "text-mk-yellow" : "text-mk-fg4"} />}
-          {compilerMissing ? t("compiler.missing") : compilerInfo.name}
-          {!compilerMissing && <span className="text-mk-fg4">· {autoCompile ? t("topbar.autoOn") : t("topbar.manual")}</span>}
-        </span>
-      )}
+          {/* Primary: Share / Room */}
+          {mode === "collab" ? (
+            <button
+              onClick={props.onShare}
+              className={`flex items-center gap-1.5 h-7 px-2.5 rounded border cursor-pointer hover:bg-mk-bg3 ${
+                props.isHost ? "border-mk-yellow/50 text-mk-yellow" : "border-mk-blue/50 text-mk-blue"
+              }`}
+              title={`${t("toolbar.room.tip")}\n${conn.text}`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${conn.dot}`} />
+              <Users size={13} />
+              {t("rail.room")} · {props.peerCount}
+            </button>
+          ) : (
+            <button
+              onClick={props.onShare}
+              disabled={isCompiling}
+              className="flex items-center gap-1.5 h-7 px-2.5 rounded border border-mk-blue/50 text-mk-blue hover:bg-mk-blue/10 cursor-pointer disabled:opacity-50"
+              title={t("toolbar.collaborate.tip")}
+            >
+              <Share2 size={13} />
+              {t("rail.share")}
+            </button>
+          )}
 
-      {/* Zoom (only when not 100 %) */}
-      {Math.abs(uiZoom - 1) > 0.001 && (
-        <button
-          onClick={onResetZoom}
-          className={`${ITEM} text-mk-fg3 hover:text-mk-fg cursor-pointer`}
-          title={t("zoom.level", { percent: Math.round(uiZoom * 100) })}
-        >
-          <span className="font-mono">{Math.round(uiZoom * 100)}%</span>
-        </button>
-      )}
-
-      {/* Last build */}
-      {isCompiling && (
-        <span className={`${ITEM} text-mk-fg3`}>
-          <Loader2 size={12} className="animate-spin" />
-        </span>
-      )}
-      {summary && (
-        <span
-          className={`${ITEM} ${summary.success ? "" : "text-mk-red"}`}
-          title={lastBuildBadge ? t("build.badge.tip", { mode: lastBuildBadge }) : t("topbar.lastBuild")}
-        >
-          <span className="font-mono">{(summary.durationMs / 1000).toFixed(1)}s</span>
-          {pageCount !== null && <span className="text-mk-fg4">· {pageCount === 1 ? t("preview.page") : t("preview.pages", { count: pageCount })}</span>}
-          {summary.mode === "chapter" && <span className="text-mk-blue">· {t("build.badge.chapter")}</span>}
-          {summary.draft && <span className="text-mk-orange">· {t("build.badge.draft")}</span>}
-        </span>
+          {/* Primary: Export */}
+          <button
+            onClick={props.onExport}
+            disabled={!props.canExport}
+            className="flex items-center gap-1.5 h-7 px-2.5 rounded border border-mk-bg4 text-mk-fg2 hover:text-mk-fg hover:bg-mk-bg3 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            title={`${t("preview.export.tip")} (${shortcutLabel("export", mac)})`}
+          >
+            <Download size={13} />
+            {t("rail.export")}
+          </button>
+        </>
       )}
     </header>
   );

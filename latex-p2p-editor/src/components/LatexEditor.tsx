@@ -6,6 +6,7 @@
 // edits received from remote peers.
 
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
+import type { UndoManager } from "yjs";
 import { EditorState } from "@codemirror/state";
 import {
   EditorView,
@@ -50,6 +51,14 @@ export interface LatexEditorHandle {
 interface LatexEditorProps {
   ytext: Y.Text;
   awareness: Awareness;
+  /** Per-file undo history that outlives this editor instance (tab switches). */
+  undoManager?: UndoManager;
+  /** Cursor offset to restore when the editor mounts (coming back to a tab). */
+  initialAnchor?: number;
+  /** 1-based line of the main cursor, on every selection change. */
+  onCursorLine?: (line: number) => void;
+  /** Cursor offset when the editor unmounts (leaving the tab). */
+  onLeave?: (anchor: number) => void;
 }
 
 /** Monokai Pro highlight style tuned for LaTeX. */
@@ -106,11 +115,13 @@ const editorTheme = EditorView.theme(
 );
 
 const LatexEditor = forwardRef<LatexEditorHandle, LatexEditorProps>(function LatexEditor(
-  { ytext, awareness },
+  { ytext, awareness, undoManager, initialAnchor, onCursorLine, onLeave },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const callbacks = useRef({ onCursorLine, onLeave, initialAnchor });
+  callbacks.current = { onCursorLine, onLeave, initialAnchor };
 
   useImperativeHandle(
     ref,
@@ -175,18 +186,32 @@ const LatexEditor = forwardRef<LatexEditorHandle, LatexEditorProps>(function Lat
         ]),
         latex({ enableLinting: false, enableTooltips: false }),
         syntaxHighlighting(latexHighlightStyle, { fallback: true }),
-        yCollab(ytext, awareness),
+        yCollab(ytext, awareness, undoManager ? { undoManager } : undefined),
+        EditorView.updateListener.of((update) => {
+          if (update.selectionSet || update.docChanged) {
+            const { state: st } = update;
+            callbacks.current.onCursorLine?.(st.doc.lineAt(st.selection.main.head).number);
+          }
+        }),
         editorTheme,
       ],
     });
 
     const view = new EditorView({ state, parent });
     viewRef.current = view;
+    const anchor = callbacks.current.initialAnchor;
+    if (anchor !== undefined && anchor > 0) {
+      const pos = Math.min(anchor, view.state.doc.length);
+      view.dispatch({ selection: { anchor: pos }, effects: EditorView.scrollIntoView(pos, { y: "center" }) });
+    }
+    callbacks.current.onCursorLine?.(view.state.doc.lineAt(view.state.selection.main.head).number);
+    view.focus();
     return () => {
+      callbacks.current.onLeave?.(view.state.selection.main.head);
       view.destroy();
       viewRef.current = null;
     };
-  }, [ytext, awareness]);
+  }, [ytext, awareness, undoManager]);
 
   return <div ref={containerRef} className="h-full w-full overflow-hidden" />;
 });

@@ -42,14 +42,33 @@ export function seedClientID(text: string): number {
  * No-op (returns an empty update) when `text` is empty.
  */
 export function seedDocFromText(doc: Y.Doc, text: string): Uint8Array {
+  return seedTextUnderKey(doc, TEXT_KEY, text);
+}
+
+/**
+ * Like [`seedDocFromText`] for any top-level Y.Text (one per project file).
+ * The clientID also hashes the key for every key but `TEXT_KEY` (kept as is so
+ * peers on older versions still converge): struct IDs are global to the doc, so
+ * two files with the same initial content must not produce the same IDs.
+ */
+export function seedTextUnderKey(doc: Y.Doc, key: string, text: string): Uint8Array {
   if (text.length === 0) {
     return new Uint8Array(0);
   }
   const seed = new Y.Doc();
-  seed.clientID = seedClientID(text);
-  seed.getText(TEXT_KEY).insert(0, text);
+  seed.clientID = seedClientID(key === TEXT_KEY ? text : `${key}\u0000${text}`);
+  seed.getText(key).insert(0, text);
   const update = Y.encodeStateAsUpdate(seed);
   seed.destroy();
   Y.applyUpdate(doc, update, "seed");
   return update;
+}
+
+/**
+ * True when the Y.Text never held any content (no items, not even deleted
+ * ones). A text emptied by a user is not pristine: seeding it again would
+ * resurrect deleted content (and with deterministic IDs, silently do nothing).
+ */
+export function isPristineText(ytext: Y.Text): boolean {
+  return ytext._start === null;
 }

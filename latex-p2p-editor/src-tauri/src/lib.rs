@@ -195,6 +195,15 @@ fn list_project_files(project_path: String) -> Result<Vec<ProjectNode>, String> 
     project::list_project_files(&project_path)
 }
 
+/// Raw bytes of a project file (image / PDF previews) as a binary IPC response.
+#[tauri::command]
+async fn read_project_file_bytes(project_path: String, rel_path: String) -> Result<tauri::ipc::Response, String> {
+    let bytes = tauri::async_runtime::spawn_blocking(move || project::read_project_file_bytes(&project_path, &rel_path))
+        .await
+        .map_err(|e| format!("Read task panicked: {e}"))??;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 /// Safely read any text file inside the project.
 #[tauri::command]
 fn read_project_file(project_path: String, rel_path: String) -> Result<String, String> {
@@ -344,6 +353,7 @@ async fn compile_latex(
     timeout_secs: Option<u64>,
     options: Option<BuildOptions>,
     room_id: Option<String>,
+    open_files: Option<std::collections::BTreeMap<String, String>>,
     app: tauri::AppHandle,
 ) -> Result<CompileOutput, String> {
     let timeout = timeout_secs.map(Duration::from_secs).unwrap_or(compiler::DEFAULT_TIMEOUT);
@@ -351,7 +361,15 @@ async fn compile_latex(
     // In a room, files received from peers fill in what the project folder lacks.
     let overlay = room_id.map(|r| asset_cache(&app, &r, &project_path)).transpose()?.map(|c| c.files_dir());
     tauri::async_runtime::spawn_blocking(move || {
-        compiler::compile_with_assets(&project_path, &main_file, &tex_content, &options, timeout, overlay.as_deref())
+        compiler::compile_with_assets(
+            &project_path,
+            &main_file,
+            &tex_content,
+            &options,
+            timeout,
+            overlay.as_deref(),
+            &open_files.unwrap_or_default(),
+        )
     })
     .await
     .map_err(|e| format!("Compile task panicked: {e}"))?
@@ -433,6 +451,7 @@ pub fn run() {
             ensure_room_workspace,
             list_project_files,
             read_project_file,
+            read_project_file_bytes,
             save_project_file,
             create_project_node,
             delete_project_node,
