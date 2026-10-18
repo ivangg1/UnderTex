@@ -363,3 +363,8 @@ npm run build            # tsc + vite
 cd src-tauri
 cargo test               # project (tree, file ops, binary previews), history, fsutil, assets (listing, cache), compiler: editor overrides, room-cache merge, includeonly/draft/preamble rewrites, format cache, real chapter builds, SyncTeX parser (tectonic/pdflatex fixtures) and a real nested-root build searched both ways
 ```
+
+## License
+
+[MIT](LICENSE). Bundled third-party software keeps its own license, e.g.
+[Tectonic](https://github.com/tectonic-typesetting/tectonic) (MIT).
