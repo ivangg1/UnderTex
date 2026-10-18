@@ -1,4 +1,4 @@
-# LaTeX P2P Desktop Editor
+# UnderTex - LaTeX P2P Desktop Editor  
 
 A **local-first** desktop LaTeX editor: it compiles on your own CPU (no server
 timeouts) and collaborates in real time over **P2P (WebRTC + CRDT)** without a
