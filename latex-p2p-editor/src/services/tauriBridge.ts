@@ -43,6 +43,8 @@ export interface CompilerInfo {
   name: string | null;
   path: string | null;
   version: string | null;
+  /** True when the engine is the Tectonic shipped inside the app. */
+  bundled?: boolean;
   install_hint: string;
 }
 
