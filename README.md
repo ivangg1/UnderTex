@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/brand/undertex-logo-dark.png">
-    <img src="docs/brand/undertex-logo-horizontal.png" alt="UnderTeX, open source" width="560">
+    <img src="docs/brand/undertex-logo-horizontal.png" alt="UnderTeX" width="560">
   </picture>
 </p>
 

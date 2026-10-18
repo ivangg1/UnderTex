@@ -109,6 +109,7 @@ import { useTheme } from "./services/theme";
 import { useI18n, type MessageKey } from "./i18n";
 import type * as Y from "yjs";
 import type { Awareness } from "y-protocols/awareness";
+import { getVersion } from "@tauri-apps/api/app";
 
 const AUTO_COMPILE_KEY = "latex_auto_compile";
 const BUILD_DRAFT_KEY = "latex_build_draft";
@@ -274,6 +275,12 @@ function App() {
 
   // ─── Auto-update ────────────────────────────────────────────────
   const [updateState, setUpdateState] = useState<UpdateState>({ status: "idle" });
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  useEffect(() => {
+    getVersion()
+      .then(setAppVersion)
+      .catch(() => setAppVersion(null));
+  }, []);
 
   // ─── Collaboration ──────────────────────────────────────────────
   const [currentUser, setCurrentUser] = useState<CollabUser>(getSavedUser);
@@ -1605,7 +1612,17 @@ function App() {
     );
   } else if (activePanel === "profile") {
     panelTitle = t("profile.title");
-    panelContent = <ProfilePanel currentUser={currentUser} onUserChange={handleUserChange} onNewWindow={handleNewWindow} />;
+    panelContent = (
+      <ProfilePanel
+        currentUser={currentUser}
+        onUserChange={handleUserChange}
+        onNewWindow={handleNewWindow}
+        appVersion={appVersion}
+        updateState={updateState}
+        onCheckUpdates={() => void checkAndStageUpdate({ onState: setUpdateState }, { manual: true })}
+        onInstallUpdate={() => void handleInstallUpdate()}
+      />
+    );
   }
   const effectivePanel: PanelId | null = panelContent ? activePanel : null;
 

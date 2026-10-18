@@ -302,6 +302,13 @@ export const es: Record<keyof typeof en, string> = {
   "cloud.assist.dismiss": "Descartar",
 
   // ─── Actualizaciones ────────────────────────────────────────────
+  "update.section": "Actualizaciones",
+  "update.check": "Buscar actualizaciones",
+  "update.checking": "Buscando…",
+  "update.upToDate": "Tienes la última versión.",
+  "update.auto": "Se comprueba sola al abrir la app y cada 6 horas.",
+  "update.downloadingShort": "Descargando {version}… {percent}",
+  "update.installVersion": "Reiniciar e instalar {version}",
   "update.downloading": "Descargando la versión {version}…",
   "update.ready": "La versión {version} está lista. Reinicia para actualizar.",
   "update.install": "Reiniciar y actualizar",

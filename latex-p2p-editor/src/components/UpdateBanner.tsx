@@ -13,7 +13,7 @@ interface UpdateBannerProps {
 
 export default function UpdateBanner({ state, onInstall, onRetry, onDismiss }: UpdateBannerProps) {
   const { t } = useI18n();
-  if (state.status === "idle" || state.status === "checking") return null;
+  if (state.status === "idle" || state.status === "checking" || state.status === "uptodate") return null;
 
   const base = "flex items-center gap-3 px-4 py-1.5 text-xs shrink-0 border-b";
   if (state.status === "downloading") {
