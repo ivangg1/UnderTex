@@ -147,7 +147,13 @@ and navigation is keyboard-first (fuzzy file search, section and line jumps).
 
 ## Install and run
 
-Requirements: Node 22+, stable Rust, and a LaTeX engine on the system:
+**Users:** download the installer for your platform from
+[Releases](https://github.com/ivangg1/UnderTex/releases/latest). It includes a
+LaTeX engine ([Tectonic](https://tectonic-typesetting.github.io)), so nothing
+else has to be installed. The first build downloads the LaTeX packages it needs
+(internet required once); later builds work offline from the cache.
+
+**Developers:** Requirements: Node 22+, stable Rust, and a LaTeX engine on the system:
 
 | OS      | Recommended                                   | Alternative                     |
 | ------- | --------------------------------------------- | ------------------------------- |

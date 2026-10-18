@@ -27,3 +27,6 @@ dist-ssr
 .env
 .env.*
 !.env.example
+
+# Tectonic sidecar downloaded by scripts/fetch-tectonic.mjs (release builds)
+src-tauri/binaries/

@@ -246,6 +246,7 @@ async fn detect_compiler() -> CompilerInfo {
             name: None,
             path: None,
             version: None,
+            bundled: false,
             install_hint: compiler::install_hint(),
         })
 }

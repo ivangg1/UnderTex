@@ -74,6 +74,8 @@ pub struct CompilerInfo {
     pub name: Option<String>,
     pub path: Option<String>,
     pub version: Option<String>,
+    /// `true` when the engine is the Tectonic shipped inside the app bundle.
+    pub bundled: bool,
     /// Human-readable, OS-specific installation instructions.
     pub install_hint: String,
 }
@@ -223,16 +225,40 @@ fn configure_command(cmd: &mut Command) {
     }
 }
 
-/// Returns the first available engine, if any.
-pub fn find_engine() -> Option<(Engine, PathBuf)> {
+/// Tectonic shipped inside the app (Tauri `externalBin` sidecar): installers put
+/// it next to the main executable (`Contents/MacOS/` on macOS, the install dir
+/// on Windows, `/usr/bin` or the AppImage root on Linux).
+pub fn bundled_tectonic_in(dir: &Path) -> Option<PathBuf> {
+    let name = if cfg!(windows) { "tectonic.exe" } else { "tectonic" };
+    let candidate = dir.join(name);
+    candidate.is_file().then_some(candidate)
+}
+
+fn bundled_tectonic() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    bundled_tectonic_in(exe.parent()?)
+}
+
+/// Returns the engine to use: the bundled Tectonic first (always present in
+/// installed builds, so non-developers need nothing else), then a system
+/// Tectonic, then pdflatex. The flag says whether it is the bundled one.
+pub fn find_engine_with_origin() -> Option<(Engine, PathBuf, bool)> {
+    if let Some(path) = bundled_tectonic() {
+        return Some((Engine::Tectonic, path, true));
+    }
     [Engine::Tectonic, Engine::PdfLatex]
         .into_iter()
-        .find_map(|engine| find_executable(engine.binary()).map(|p| (engine, p)))
+        .find_map(|engine| find_executable(engine.binary()).map(|p| (engine, p, false)))
+}
+
+/// Returns the first available engine, if any.
+pub fn find_engine() -> Option<(Engine, PathBuf)> {
+    find_engine_with_origin().map(|(engine, path, _)| (engine, path))
 }
 
 pub fn detect_compiler() -> CompilerInfo {
-    match find_engine() {
-        Some((engine, path)) => {
+    match find_engine_with_origin() {
+        Some((engine, path, bundled)) => {
             let mut cmd = Command::new(&path);
             cmd.arg("--version");
             configure_command(&mut cmd);
@@ -246,6 +272,7 @@ pub fn detect_compiler() -> CompilerInfo {
                 name: Some(engine.binary().to_string()),
                 path: Some(path.to_string_lossy().into_owned()),
                 version,
+                bundled,
                 install_hint: install_hint(),
             }
         }
@@ -254,6 +281,7 @@ pub fn detect_compiler() -> CompilerInfo {
             name: None,
             path: None,
             version: None,
+            bundled: false,
             install_hint: install_hint(),
         },
     }
@@ -1147,6 +1175,20 @@ mod tests {
         let found = find_executable(known).expect("a shell must exist on PATH");
         assert!(found.is_file());
         assert!(find_executable("definitely-not-a-real-binary-xyz").is_none());
+    }
+
+    #[test]
+    fn bundled_tectonic_is_found_next_to_the_executable_only() {
+        let dir = temp_dir("bundled");
+        assert!(bundled_tectonic_in(&dir).is_none());
+        let name = if cfg!(windows) { "tectonic.exe" } else { "tectonic" };
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("sub").join(name), b"x").unwrap();
+        assert!(bundled_tectonic_in(&dir).is_none(), "only the executable's own folder counts");
+        fs::create_dir_all(dir.join(name).with_extension("d")).unwrap();
+        fs::write(dir.join(name), b"x").unwrap();
+        assert_eq!(bundled_tectonic_in(&dir), Some(dir.join(name)));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
