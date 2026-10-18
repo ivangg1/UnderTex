@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="305" viewBox="0 0 1240 305">
+<g transform="translate(9 12) scale(.58)">
+<defs>
+<linearGradient id="paper" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FAF9F5"/><stop offset="1" stop-color="#E7E5DE"/></linearGradient>
+<linearGradient id="front" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#111113"/><stop offset="1" stop-color="#29292D"/></linearGradient>
+<linearGradient id="back" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#74747E"/><stop offset="1" stop-color="#A6A5AE"/></linearGradient>
+</defs>
+<rect x="32" y="32" width="448" height="448" rx="100" fill="url(#paper)" stroke="#D4D1C9" stroke-width="3"/>
+<polygon points="376,148 404,312 192,412 252,248" fill="url(#back)"/>
+<polygon points="344,114 128,198 140,378 298,292" fill="#000" opacity="0.085"/>
+<polygon points="338,104 122,188 134,368 292,282" fill="url(#front)"/>
+<path d="M218 234 L292 308" stroke="#141416" stroke-width="14" stroke-linecap="round"/>
+</g>
+<text x="336" y="214" font-family="Inter Display,Inter,Arial,sans-serif" font-weight="750" font-size="140" letter-spacing="-5" fill="#F9F8F4">Under</text>
+<text x="725" y="214" font-family="Inter Display,Inter,Arial,sans-serif" font-weight="750" font-size="140" letter-spacing="-5" fill="#BBBAC2">TeX</text>
+<text x="341" y="264" font-family="Inter,Arial,sans-serif" font-size="25" letter-spacing="7" font-weight="550" fill="#A3A2AB">OPEN SOURCE</text>
+</svg>

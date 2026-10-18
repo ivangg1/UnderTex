@@ -1,4 +1,11 @@
-# UnderTex - LaTeX P2P Desktop Editor  
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/undertex-logo-dark.png">
+    <img src="docs/brand/undertex-logo-horizontal.png" alt="UnderTeX, open source" width="560">
+  </picture>
+</p>
+
+# UnderTeX: LaTeX P2P Desktop Editor
 
 A **local-first** desktop LaTeX editor: it compiles on your own CPU (no server
 timeouts) and collaborates in real time over **P2P (WebRTC + CRDT)** without a
