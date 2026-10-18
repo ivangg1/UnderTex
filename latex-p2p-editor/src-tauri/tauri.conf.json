@@ -40,7 +40,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVEQkJBQzQxNjI0OTA5MzEKUldReENVbGlRYXk3WGNZTEJXV1d0ZUlrMzVQdk92Qk50S3NJeXlIMTRzdzhnZFQ4RlFTZURPem0K",
       "endpoints": [
-        "https://github.com/ivangg1/editor-p2p-latex/releases/latest/download/latest.json"
+        "https://github.com/ivangg1/UnderTex/releases/latest/download/latest.json"
       ]
     }
   }
