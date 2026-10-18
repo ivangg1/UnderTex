@@ -8,6 +8,7 @@ import type { CollabMode, ConnectionStatus, PeerInfo, SaveState } from "../servi
 import type { CompilerInfo } from "../services/tauriBridge";
 import type { CompileSummary } from "./PdfPreview";
 import { connectionLabel } from "./ConnectionBadge";
+import BrandLogo from "./BrandLogo";
 
 interface StatusBarProps {
   hasProject: boolean;
@@ -70,6 +71,9 @@ export default function StatusBar(props: StatusBarProps) {
 
   return (
     <footer className="h-6 shrink-0 flex items-stretch bg-mk-bg2 border-t border-mk-bg3 text-[10.5px] text-mk-fg3 select-none">
+      <span className="flex items-center pl-2 pr-2.5 border-r border-mk-bg3">
+        <BrandLogo className="h-3.5 opacity-90" />
+      </span>
       {props.hasProject && (
         <button
           onClick={props.onOpenRoom}
