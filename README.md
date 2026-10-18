@@ -318,10 +318,13 @@ The app cannot grant access: the host still shares the folder in the provider.
 
 ## Releases and auto-update
 
-Pushing a tag `vX.Y.Z` (matching `latex-p2p-editor/src-tauri/tauri.conf.json`)
-runs [`release.yml`](.github/workflows/release.yml): it builds macOS (Apple
-Silicon and Intel), Windows and Linux bundles, signs the updater artifacts and
-publishes a GitHub Release with `latest.json`. Installed apps check that file on
+Pushing a tag `vX.Y.Z` (or creating a release with a new tag in the GitHub UI)
+runs [`release.yml`](.github/workflows/release.yml). **The tag is the version**:
+the workflow writes it into `tauri.conf.json`, `package.json` and `Cargo.toml`
+(`latex-p2p-editor/scripts/set-version.mjs`) before building, so nothing is
+bumped by hand. It builds macOS (Apple Silicon and Intel), Windows and Linux
+bundles, signs the updater artifacts and publishes a GitHub Release with
+`latest.json`.
 start-up and every six hours, download the new version in the background and
 show a *Restart and update* banner.
 

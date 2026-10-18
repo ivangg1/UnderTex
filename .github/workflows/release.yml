@@ -2,8 +2,9 @@
 # Linux and publishes them as a GitHub Release, together with the updater
 # artifacts and `latest.json` the in-app auto-updater reads.
 #
-# Trigger: push a tag like `v0.2.0` (the tag must match tauri.conf.json's
-# version). Required repository secrets:
+# Trigger: push a tag like `v0.2.0` (or create a release with a new tag in the
+# GitHub UI). The version is taken from the tag; nothing has to be bumped by
+# hand. Required repository secrets:
 #   TAURI_SIGNING_PRIVATE_KEY           contents of the updater private key
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password (empty string if none)
 name: Release
@@ -17,26 +18,7 @@ permissions:
   contents: write
 
 jobs:
-  check-version:
-    # The auto-updater compares versions: a tag whose app version was not bumped
-    # publishes a latest.json that installed copies treat as "no update".
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Tag must match the app version everywhere
-        run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          CONF=$(jq -r .version latex-p2p-editor/src-tauri/tauri.conf.json)
-          PKG=$(jq -r .version latex-p2p-editor/package.json)
-          CARGO=$(sed -n 's/^version = "\(.*\)"/\1/p' latex-p2p-editor/src-tauri/Cargo.toml | head -1)
-          echo "tag=$TAG tauri.conf=$CONF package.json=$PKG Cargo.toml=$CARGO"
-          if [ "$TAG" != "$CONF" ] || [ "$TAG" != "$PKG" ] || [ "$TAG" != "$CARGO" ]; then
-            echo "::error::Tag v$TAG does not match the app version. Bump tauri.conf.json, package.json and Cargo.toml before tagging."
-            exit 1
-          fi
-
   build:
-    needs: check-version
     strategy:
       fail-fast: false
       matrix:
@@ -73,6 +55,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
             libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      # The tag is the single source of truth for the version: v0.1.5 builds
+      # 0.1.5 everywhere, so latest.json always announces a newer version.
+      - name: Set app version from the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: latex-p2p-editor
+        run: node scripts/set-version.mjs "${{ github.ref_name }}"
 
       - name: Install frontend dependencies
         working-directory: latex-p2p-editor
