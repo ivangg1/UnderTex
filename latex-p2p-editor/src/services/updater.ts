@@ -9,6 +9,8 @@ export type UpdateState =
   | { status: "checking" }
   | { status: "downloading"; version: string; progress: number | null }
   | { status: "ready"; version: string; notes: string | null }
+  /** Reported only for manual checks, so the user gets an answer. */
+  | { status: "uptodate"; checkedAt: number }
   | { status: "error"; message: string };
 
 export interface UpdaterCallbacks {
@@ -21,18 +23,33 @@ export const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 export const FIRST_CHECK_DELAY_MS = 8_000;
 
 let pendingUpdate: Update | null = null;
+let inFlight: Promise<string | null> | null = null;
 
 /**
  * Checks for an update and, when one exists, downloads and stages it.
  * Resolves to the staged version or `null`. Never throws: errors are reported
  * through `onState`.
  */
-export async function checkAndStageUpdate(callbacks: UpdaterCallbacks): Promise<string | null> {
+export function checkAndStageUpdate(callbacks: UpdaterCallbacks, opts: { manual?: boolean } = {}): Promise<string | null> {
+  // A staged update is already waiting: just show it again.
+  if (pendingUpdate) {
+    callbacks.onState({ status: "ready", version: pendingUpdate.version, notes: pendingUpdate.body ?? null });
+    return Promise.resolve(pendingUpdate.version);
+  }
+  // Never run two checks/downloads at once (manual click during the periodic check).
+  if (inFlight) return inFlight;
+  inFlight = runCheck(callbacks, opts.manual ?? false).finally(() => {
+    inFlight = null;
+  });
+  return inFlight;
+}
+
+async function runCheck(callbacks: UpdaterCallbacks, manual: boolean): Promise<string | null> {
   callbacks.onState({ status: "checking" });
   try {
     const update = await check();
     if (!update) {
-      callbacks.onState({ status: "idle" });
+      callbacks.onState(manual ? { status: "uptodate", checkedAt: Date.now() } : { status: "idle" });
       return null;
     }
     let total: number | null = null;

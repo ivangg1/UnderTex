@@ -300,6 +300,13 @@ export const en = {
   "cloud.assist.dismiss": "Dismiss",
 
   // ─── Updates ────────────────────────────────────────────────────
+  "update.section": "Updates",
+  "update.check": "Check for updates",
+  "update.checking": "Checking…",
+  "update.upToDate": "You have the latest version.",
+  "update.auto": "Checked automatically at start-up and every 6 hours.",
+  "update.downloadingShort": "Downloading {version}… {percent}",
+  "update.installVersion": "Restart and install {version}",
   "update.downloading": "Downloading version {version}…",
   "update.ready": "Version {version} is ready. Restart to update.",
   "update.install": "Restart and update",

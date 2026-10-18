@@ -2,7 +2,8 @@
 // server, optional TURN relay and the extra-window helper.
 
 import { useEffect, useState } from "react";
-import { Check, Monitor, Moon, PlusSquare, Sun } from "lucide-react";
+import { Check, Download, Loader2, Monitor, Moon, PlusSquare, RefreshCw, Sun } from "lucide-react";
+import type { UpdateState } from "../services/updater";
 import { LOCALES, useI18n } from "../i18n";
 import { setThemePref, useTheme, type ThemePref } from "../services/theme";
 import {
@@ -29,13 +30,26 @@ interface ProfilePanelProps {
   currentUser: CollabUser;
   onUserChange: (user: CollabUser) => void;
   onNewWindow: () => void;
+  /** Installed app version (null while loading or in a browser preview). */
+  appVersion: string | null;
+  updateState: UpdateState;
+  onCheckUpdates: () => void;
+  onInstallUpdate: () => void;
 }
 
 const SECTION = "px-4 py-3 border-b border-mk-bg3 flex flex-col gap-2";
 const LABEL = "text-[10px] uppercase tracking-widest text-mk-fg4 font-semibold";
 const INPUT = "w-full bg-mk-bg border border-mk-bg3 focus:border-mk-yellow px-2 py-1.5 text-mk-fg focus:outline-none";
 
-export default function ProfilePanel({ currentUser, onUserChange, onNewWindow }: ProfilePanelProps) {
+export default function ProfilePanel({
+  currentUser,
+  onUserChange,
+  onNewWindow,
+  appVersion,
+  updateState,
+  onCheckUpdates,
+  onInstallUpdate,
+}: ProfilePanelProps) {
   const { t, locale, setLocale } = useI18n();
   const [themePref] = useTheme();
   const [name, setName] = useState(currentUser.name);
@@ -205,6 +219,45 @@ export default function ProfilePanel({ currentUser, onUserChange, onNewWindow }:
         </div>
         <p className={`text-[10px] ${turnInvalid ? "text-mk-red" : "text-mk-fg4"}`}>
           {turnInvalid ? t("profile.turn.invalid") : t("profile.turn.help")}
+        </p>
+      </div>
+
+      <div className={SECTION}>
+        <div className="flex items-center justify-between">
+          <span className={LABEL}>{t("update.section")}</span>
+          {appVersion && <span className="font-mono text-[10px] text-mk-fg3">v{appVersion}</span>}
+        </div>
+        {updateState.status === "ready" ? (
+          <button
+            onClick={onInstallUpdate}
+            className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 bg-mk-green text-mk-bg2 font-semibold hover:bg-mk-yellow cursor-pointer transition-colors"
+          >
+            <Download size={13} />
+            {t("update.installVersion", { version: updateState.version })}
+          </button>
+        ) : (
+          <button
+            onClick={onCheckUpdates}
+            disabled={updateState.status === "checking" || updateState.status === "downloading"}
+            className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 bg-mk-bg border border-mk-bg3 hover:border-mk-fg4 text-mk-fg2 hover:text-mk-fg disabled:opacity-60 cursor-pointer disabled:cursor-default transition-colors"
+          >
+            {updateState.status === "checking" || updateState.status === "downloading" ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : (
+              <RefreshCw size={13} />
+            )}
+            {updateState.status === "checking" ? t("update.checking") : t("update.check")}
+          </button>
+        )}
+        <p className="text-[10px] text-mk-fg4" aria-live="polite">
+          {updateState.status === "uptodate" && t("update.upToDate")}
+          {updateState.status === "downloading" &&
+            t("update.downloadingShort", {
+              version: updateState.version,
+              percent: updateState.progress === null ? "…" : `${Math.round(updateState.progress * 100)}%`,
+            })}
+          {updateState.status === "error" && <span className="text-mk-red">{t("update.error", { message: updateState.message })}</span>}
+          {(updateState.status === "idle" || updateState.status === "checking") && t("update.auto")}
         </p>
       </div>
 

@@ -7,6 +7,14 @@
 # hand. Required repository secrets:
 #   TAURI_SIGNING_PRIVATE_KEY           contents of the updater private key
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password (empty string if none)
+#
+# Windows code signing (SignPath, optional; see docs/code-signing.md). Enabled
+# when the repository variable SIGNPATH_ORGANIZATION_ID is set, with:
+#   secret   SIGNPATH_API_TOKEN
+#   vars     SIGNPATH_ORGANIZATION_ID, SIGNPATH_PROJECT_SLUG,
+#            SIGNPATH_SIGNING_POLICY_SLUG (e.g. release-signing)
+# The release is created as a draft and only published once the Windows
+# installers are signed (or right away when signing is not configured).
 name: Release
 
 on:
@@ -87,7 +95,69 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "LaTeX P2P ${{ github.ref_name }}"
           releaseBody: "Download the installer for your platform below. Installed copies update themselves."
-          releaseDraft: false
+          # Published by the `publish` job, after Windows signing.
+          releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
           args: ${{ matrix.args }} --config src-tauri/tauri.bundle-tectonic.conf.json
+
+  sign-windows:
+    needs: build
+    if: vars.SIGNPATH_ORGANIZATION_ID != ''
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Download the unsigned Windows installers and latest.json
+        run: |
+          mkdir -p unsigned
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir unsigned --pattern '*-setup.exe' --pattern '*.msi'
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'latest.json' --output latest.json
+          ls -la unsigned
+
+      - name: Upload installers for SignPath
+        id: upload-unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-unsigned
+          path: unsigned/*
+          if-no-files-found: error
+
+      - name: Sign with SignPath
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      - name: Regenerate updater signatures and patch latest.json
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: node .github/scripts/resign-windows.mjs signed latest.json
+
+      - name: Replace the release files with the signed ones
+        run: |
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber signed/*.exe signed/*.msi signed/*.sig latest.json
+
+  publish:
+    needs: [build, sign-windows]
+    # Runs when signing succeeded or was skipped (not configured), never after a failure.
+    if: always() && needs.build.result == 'success' && needs.sign-windows.result != 'failure' && needs.sign-windows.result != 'cancelled'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Publish the release
+        run: gh release edit "${{ github.ref_name }}" --repo "$GITHUB_REPOSITORY" --draft=false --latest
