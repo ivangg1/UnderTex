@@ -1,7 +1,7 @@
 // English (source of truth for the message keys).
 export const en = {
   // ─── App / generic ──────────────────────────────────────────────
-  "app.name": "LaTeX P2P",
+  "app.name": "UnderTeX",
   "app.tagline": "Local compile · P2P collaboration",
   "action.close": "Close",
   "action.copy": "Copy",

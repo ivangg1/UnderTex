@@ -3,6 +3,7 @@
 import { AlertTriangle, FilePlus, FolderOpen, LogIn, X } from "lucide-react";
 import { useI18n } from "../i18n";
 import { folderName, type RecentProject } from "../services/recents";
+import BrandLogo from "./BrandLogo";
 
 interface WelcomeProps {
   recents: RecentProject[];
@@ -33,7 +34,9 @@ export default function Welcome({
     <div className="h-full overflow-auto bg-mk-bg">
       <div className="max-w-3xl mx-auto px-10 py-14 select-none">
         <div className="mb-10">
-          <h1 className="text-2xl font-semibold text-mk-fg tracking-tight">{t("app.name")}</h1>
+          <h1 className="h-16 -ml-1">
+            <BrandLogo className="h-full" title={t("app.name")} />
+          </h1>
           <p className="text-sm text-mk-fg3 mt-1">{t("app.tagline")}</p>
         </div>
 

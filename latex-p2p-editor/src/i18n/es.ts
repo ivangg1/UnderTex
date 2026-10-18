@@ -3,7 +3,7 @@ import type { en } from "./en";
 // Español.
 export const es: Record<keyof typeof en, string> = {
   // ─── App / genérico ─────────────────────────────────────────────
-  "app.name": "LaTeX P2P",
+  "app.name": "UnderTeX",
   "app.tagline": "Compilación local · Colaboración P2P",
   "action.close": "Cerrar",
   "action.copy": "Copiar",

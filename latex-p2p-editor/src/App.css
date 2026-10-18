@@ -47,6 +47,18 @@
   --color-mk-hover: #e6dedc;
 }
 
+/* Logo variants (BrandLogo, splash): light-text logo on the dark theme,
+   dark-text logo on the light theme. */
+.brand-logo--light {
+  display: none;
+}
+:root[data-theme="light"] .brand-logo--light {
+  display: inline;
+}
+:root[data-theme="light"] .brand-logo--dark {
+  display: none;
+}
+
 :root {
   color-scheme: dark;
   -webkit-font-smoothing: antialiased;

@@ -4,10 +4,78 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/app-icon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>LaTeX P2P Editor</title>
+    <title>UnderTeX</title>
+    <script>
+      // Resolve the theme before first paint (mirrors src/services/theme.ts) so
+      // the splash and the UI never flash the wrong palette or logo.
+      (function () {
+        var pref = "system";
+        try {
+          var raw = localStorage.getItem("latex_theme");
+          if (raw === "dark" || raw === "light" || raw === "system") pref = raw;
+        } catch (e) {}
+        var dark = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)").matches : true;
+        document.documentElement.dataset.theme = pref === "system" ? (dark ? "dark" : "light") : pref;
+      })();
+    </script>
+    <style>
+      /* Splash shown while the app loads; removed by src/main.tsx. */
+      #splash {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483647;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #221f22;
+        transition: opacity 280ms ease;
+      }
+      :root[data-theme="light"] #splash {
+        background: #efe8e6;
+      }
+      #splash.splash--hide {
+        opacity: 0;
+        pointer-events: none;
+      }
+      #splash img {
+        width: min(420px, 60vw);
+        height: auto;
+        animation: splash-in 420ms ease-out both;
+      }
+      #splash .brand-logo--light {
+        display: none;
+      }
+      :root[data-theme="light"] #splash .brand-logo--light {
+        display: block;
+      }
+      :root[data-theme="light"] #splash .brand-logo--dark {
+        display: none;
+      }
+      @keyframes splash-in {
+        from {
+          opacity: 0;
+          transform: translateY(6px) scale(0.98);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #splash,
+        #splash img {
+          transition: none;
+          animation: none;
+        }
+      }
+    </style>
   </head>
 
   <body>
+    <div id="splash" aria-hidden="true">
+      <img class="brand-logo--dark" src="/brand/logo-dark.png" alt="" />
+      <img class="brand-logo--light" src="/brand/logo-light.png" alt="" />
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
