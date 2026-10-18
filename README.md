@@ -5,7 +5,7 @@
   </picture>
 </p>
 
-# UnderTeX: LaTeX P2P Desktop Editor
+# UnderTeX: local-first P2P LaTeX desktop editor
 
 A **local-first** desktop LaTeX editor: it compiles on your own CPU (no server
 timeouts) and collaborates in real time over **P2P (WebRTC + CRDT)** without a

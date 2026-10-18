@@ -93,7 +93,7 @@ jobs:
         with:
           projectPath: latex-p2p-editor
           tagName: ${{ github.ref_name }}
-          releaseName: "LaTeX P2P ${{ github.ref_name }}"
+          releaseName: "UnderTeX ${{ github.ref_name }}"
           releaseBody: "Download the installer for your platform below. Installed copies update themselves."
           # Published by the `publish` job, after Windows signing.
           releaseDraft: true
