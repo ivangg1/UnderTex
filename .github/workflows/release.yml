@@ -17,7 +17,26 @@ permissions:
   contents: write
 
 jobs:
+  check-version:
+    # The auto-updater compares versions: a tag whose app version was not bumped
+    # publishes a latest.json that installed copies treat as "no update".
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag must match the app version everywhere
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          CONF=$(jq -r .version latex-p2p-editor/src-tauri/tauri.conf.json)
+          PKG=$(jq -r .version latex-p2p-editor/package.json)
+          CARGO=$(sed -n 's/^version = "\(.*\)"/\1/p' latex-p2p-editor/src-tauri/Cargo.toml | head -1)
+          echo "tag=$TAG tauri.conf=$CONF package.json=$PKG Cargo.toml=$CARGO"
+          if [ "$TAG" != "$CONF" ] || [ "$TAG" != "$PKG" ] || [ "$TAG" != "$CARGO" ]; then
+            echo "::error::Tag v$TAG does not match the app version. Bump tauri.conf.json, package.json and Cargo.toml before tagging."
+            exit 1
+          fi
+
   build:
+    needs: check-version
     strategy:
       fail-fast: false
       matrix:
