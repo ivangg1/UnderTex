@@ -11,7 +11,7 @@ Windows installers exactly as before.
 ## One-time setup
 
 1. **License.** SignPath Foundation only signs projects under an OSI-approved
-   license: add a `LICENSE` file to the repository first.
+   license; UnderTeX is [MIT](../LICENSE).
 2. **Apply** at <https://signpath.org/apply> with the repository URL
    (`https://github.com/ivangg1/UnderTex`). The Foundation reviews the project.
 3. Once approved, in the SignPath web app:
