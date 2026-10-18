@@ -1,7 +1,7 @@
 {
   "name": "y-webrtc-signaling-server",
   "version": "1.0.0",
-  "description": "Minimalist y-webrtc signaling server for LaTeX P2P Desktop Editor",
+  "description": "Minimalist y-webrtc signaling server for UnderTeX",
   "type": "module",
   "main": "server.js",
   "scripts": {

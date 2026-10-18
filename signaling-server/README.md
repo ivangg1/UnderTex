@@ -1,7 +1,7 @@
 # y-webrtc signaling server
 
 Minimal, stateless WebRTC signaling server (official y-webrtc protocol, a single
-file, no database) for the LaTeX P2P editor.
+file, no database) for UnderTeX, the P2P LaTeX editor.
 
 Its only job is to let peers **find each other**: it relays SDP offers and ICE
 candidates, after which traffic flows directly between machines. From the app

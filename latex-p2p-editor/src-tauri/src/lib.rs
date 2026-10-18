@@ -1,4 +1,4 @@
-//! Tauri v2 backend for the LaTeX P2P Desktop Editor.
+//! Tauri v2 backend for UnderTeX, the local-first P2P LaTeX desktop editor.
 //!
 //! Modules:
 //! * [`project`]  – project folder, root-file detection, `.texcollab/` metadata, atomic saves.
@@ -431,7 +431,7 @@ fn export_pdf(source: String, destination: String) -> Result<(), String> {
 async fn open_new_window(app: tauri::AppHandle) -> Result<(), String> {
     let window_id = format!("win_{}", uuid::Uuid::new_v4());
     tauri::WebviewWindowBuilder::new(&app, &window_id, tauri::WebviewUrl::default())
-        .title("LaTeX P2P Editor")
+        .title("UnderTeX")
         .inner_size(1280.0, 800.0)
         .build()
         .map_err(|e| e.to_string())?;

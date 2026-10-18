@@ -131,8 +131,8 @@ export default function CollabPanel({
 
   const inviteMessage =
     locale === "es"
-      ? `Únete a mi documento LaTeX en tiempo real: abre LaTeX P2P, pulsa "Unirse" y pega este ID de sala:\n${roomId}`
-      : `Join my LaTeX document in real time: open LaTeX P2P, press "Join" and paste this room ID:\n${roomId}`;
+      ? `Únete a mi documento LaTeX en tiempo real: abre UnderTeX, pulsa "Unirse" y pega este ID de sala:\n${roomId}`
+      : `Join my LaTeX document in real time: open UnderTeX, press "Join" and paste this room ID:\n${roomId}`;
 
   const label = connectionLabel(status, t);
 

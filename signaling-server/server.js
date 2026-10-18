@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Minimalist y-webrtc signaling server for LaTeX P2P Desktop Editor.
+ * Minimalist y-webrtc signaling server for UnderTeX.
  * Based on the official y-webrtc signaling protocol.
  */
 
